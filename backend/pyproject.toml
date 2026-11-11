@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ehr-media-intelligence"
+version = "0.1.0"
+description = "EHR Media Intelligence Platform - backend (synthetic data only)"
+requires-python = ">=3.11"
+# Runtime dependencies actually used today. Later phases add their own (fhir-resources, openai,
+# sentence-transformers, chromadb) when the code that uses them lands. Lower bounds = tested versions.
+dependencies = [
+  "fastapi>=0.162",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.14",
+  "pydantic-settings>=2.5",
+  "sqlalchemy>=2.1",
+  "python-multipart>=0.0.9",  # required by FastAPI for file uploads / form fields
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9",
+  "httpx>=0.28",  # used by FastAPI's TestClient
+  "ruff>=0.6",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]  # explicit: backend/ also holds tests/ and a runtime data/ dir
+
+# Test discovery/config lives in the repository-root pytest.ini (single source of truth).
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.File", "fastapi.Form"]

@@ -1,0 +1,6 @@
+Patient: Casey Syntheticson
+MRN: 000301
+DOB: 12 Jan 1968
+Sex: Female
+Date of visit: 2024-04-10
+Reason for visit: Persistent cough for three weeks.

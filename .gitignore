@@ -1,0 +1,60 @@
+# Local Claude Code workspace
+CLAUDE.md
+.claude/
+
+# Private project context and session history
+docs/PROJECT_CONTEXT.md
+docs/SESSION_LOG.md
+docs/AI_NOTES.md
+
+# Private prompts
+prompts/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE and operating system
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Local databases and generated data
+*.db
+*.sqlite
+*.sqlite3
+data/processed/
+data/uploads/
+data/exports/
+
+# Vector database and generated model artifacts
+.chroma/
+chroma_db/
+.vector_store/
+models/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Node.js
+node_modules/
+.next/
+
+# TypeScript incremental build info
+*.tsbuildinfo

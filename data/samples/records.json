@@ -1,0 +1,10 @@
+[
+  {"mrn": "MRN-000101", "name": "Alex Testperson", "dob": "1980-03-14", "sex": "M",
+   "note": "Follow-up for chest tightness on exertion. History of hypertension.", "date": "2024-02-01"},
+  {"mrn": "mrn 000101", "name": "Alex Testperson", "dob": "03/14/1980", "sex": "male",
+   "note": "Follow-up for chest tightness on exertion.  History of hypertension.", "date": "2024-02-01"},
+  {"mrn": "MRN-000102", "name": "Sam Samplecase", "sex": "F",
+   "note": "Missing date of birth on purpose.", "date": "2024-02-03"},
+  {"mrn": "MRN-000103", "name": "Alex Testperson", "dob": "1991-07-09", "sex": "unknown",
+   "note": "Same name as MRN-000101 but different identifiers; must NOT be merged.", "date": "2024-02-05"}
+]

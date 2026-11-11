@@ -1,0 +1,3 @@
+mrn,patient_name,date_of_birth,gender,document_text,document_date
+MRN-000201,Jamie Fakename,1975-11-30,F,"Chest X-ray reviewed; no acute findings reported.",2024-03-01
+MRN-000202,Riley Mockdata,31/02/1990,M,"Invalid calendar date of birth on purpose.",2024-03-02
