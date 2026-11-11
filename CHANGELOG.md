@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- OpenAI billing/quota exhaustion (HTTP 429 `insufficient_quota`) is now a permanent error (`provider_quota_exhausted`, one attempt) instead of being retried as a transient outage; genuine rate limits, 5xx and network errors keep the bounded retry. Verified with mocked transport only.
+
 ### Added
 - Clinician search UI (React): search with patient/resource-type/date filters, ranked result cards (name, MRN, type, date, similarity, snippet), search-mode indicator, detail drawer with
   document text or AI summary, FHIR references, AI-generated labelling and disclaimer; loading/empty/error states with retry; keyboard/focus handling.

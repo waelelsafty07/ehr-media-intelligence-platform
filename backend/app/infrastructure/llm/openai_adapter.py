@@ -16,6 +16,7 @@ from openai import OpenAI
 from app.domain.errors import (
     LLMPermanentError,
     LLMProviderError,
+    LLMQuotaExhaustedError,
     LLMTimeoutError,
     LLMTransientError,
 )
@@ -24,6 +25,21 @@ from app.domain.ports.llm import LLMRequest, LLMResponse
 logger = logging.getLogger(__name__)
 
 _TRANSIENT_STATUS = {408, 409, 425, 429}
+# HTTP 429 is used for BOTH a temporary rate limit (retry) and exhausted billing/quota (never retry). Only the
+# structured `code`/`type` fields tell them apart; the human-readable message is never inspected or propagated.
+_QUOTA_CODES = {"insufficient_quota"}
+
+
+def _structured(exc: openai.APIStatusError, field: str) -> str | None:
+    """A short machine code from the SDK's parsed error body, or None. Never returns free text from the provider."""
+    value = getattr(exc, field, None)
+    if value is None and isinstance(exc.body, dict):
+        value = exc.body.get(field)
+    return value if isinstance(value, str) and len(value) <= 64 else None
+
+
+def _is_quota_exhausted(exc: openai.APIStatusError) -> bool:
+    return exc.status_code == 429 and bool({_structured(exc, "code"), _structured(exc, "type")} & _QUOTA_CODES)
 
 
 class OpenAIAdapter:
@@ -52,6 +68,8 @@ class OpenAIAdapter:
         except openai.APIStatusError as exc:
             status = exc.status_code
             logger.warning("openai_status_error", extra={"status": status})
+            if _is_quota_exhausted(exc):
+                raise LLMQuotaExhaustedError("The provider account has no remaining quota or billing.") from None
             if status in _TRANSIENT_STATUS or status >= 500:
                 raise LLMTransientError("The provider is temporarily unavailable.") from None
             raise LLMPermanentError("The provider rejected the request.") from None

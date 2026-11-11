@@ -56,7 +56,7 @@ not written by the model. Errors:
 |---|---|---|
 | 404 | `patient_not_found` | Unknown patient |
 | 409 | `no_source_records` | No completed records with text or stated diagnoses |
-| 502 | `summary_generation_failed` | After retries; `details: [{"reason": provider_unavailable \| provider_timeout \| provider_rejected \| invalid_output \| persistence_error}]`; recorded, retry by calling again |
+| 502 | `summary_generation_failed` | After retries; `details: [{"reason": provider_unavailable \| provider_timeout \| provider_rejected \| provider_quota_exhausted \| invalid_output \| persistence_error}]`; recorded, retry by calling again |
 | 503 | `ai_provider_not_configured` | No API key configured |
 
 ### GET /patients/{id}/summary

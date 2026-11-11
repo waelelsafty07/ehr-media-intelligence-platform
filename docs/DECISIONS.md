@@ -322,3 +322,9 @@ because there is deliberately no listing endpoint. **Implemented:** yes.
 exists, FHIR state is `generated`, and `record.patient_id == patient_id`. Missing, foreign and unserved-type all yield the same 404 `fhir_resource_not_found`. The `Patient` resource is refused
 (still in the Bundle). **Why:** the drawer needed one DocumentReference but was pulling the full Patient (name, MRN, DOB) over the wire. **Alternatives:** keep the Bundle (rejected: needless exposure); id-only path
 (rejected: resource ids are unique only per type). **Tradeoffs:** one more endpoint; the type in the path. **Limits:** does not reduce what the unauthenticated Bundle endpoint exposes. **Implemented:** yes.
+
+## D43. HTTP 429 is split by structured error code: `insufficient_quota` is permanent, other 429s stay transient
+**Context:** the first live request failed as `provider_unavailable` (transient, retried up to 3 times); the likely cause was a 429 for exhausted billing/quota, which the adapter treated like a rate limit.
+**Decision:** the adapter inspects only the SDK's structured `code`/`type` (short strings; never the message). `insufficient_quota` raises `LLMQuotaExhaustedError` (a permanent error, API reason `provider_quota_exhausted`, one attempt, no backoff).
+All other 429s, 5xx, 408/409/425, timeouts, connection errors and malformed 200 bodies remain transient with the unchanged bounded retry; 401/403/404/400 remain permanent. Timeouts, attempt limits and backoff are unchanged.
+**Tradeoffs:** relies on the provider's documented code; an unrecognised quota code would still be retried (bounded). **Not changed:** schema, prompts, grounding. **Verified:** mocked-transport tests only; not against the live API.

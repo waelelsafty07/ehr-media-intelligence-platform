@@ -95,6 +95,13 @@ class LLMPermanentError(LLMProviderError):
     category = "provider_rejected"
 
 
+class LLMQuotaExhaustedError(LLMPermanentError):
+    """Billing/quota exhausted (provider code `insufficient_quota`). Never retried: waiting does not fix it.
+    Distinct from a genuine rate limit, which is transient. Both arrive as HTTP 429."""
+
+    category = "provider_quota_exhausted"
+
+
 class LLMNotConfiguredError(LLMProviderError):
     category = "provider_not_configured"
 

@@ -12,7 +12,7 @@ Frontend: `cd frontend && npm test` (Vitest). Lint: `ruff check backend`.
   and fault injection.
 - Failure paths are tested next to success paths.
 
-## What exists today (476 backend tests + 1 opt-in skipped, plus 24 frontend)
+## What exists today (503 backend tests + 1 opt-in skipped, plus 24 frontend)
 
 | Area | File | Tests | Covers |
 |---|---|---|---|
@@ -60,6 +60,11 @@ Frontend: `cd frontend && npm test` (Vitest). Lint: `ruff check backend`.
   ingest->FHIR->summary->index->search, 3 result cards, name/MRN lookup (one call), document and AI-summary drawers, focused FHIR links open a single resource, Escape/focus restore,
   type/date/patient filters, no horizontal overflow at 768 px and 375 px, no unexpected console errors. It is a one-off check on one machine (macOS, Chrome), not a CI test.
 - Not covered: no automated visual/regression or accessibility (axe) scan; other browsers untested; contrast not measured; keyboard behaviour verified only for Escape/focus restore.
+
+### OpenAI error classification (`tests/integration/test_openai_error_classification.py`, 27 tests)
+Real `openai` SDK over a mocked HTTP transport, driven through the real use case (no network, no live API). Covers 429 `insufficient_quota` (code or type) = permanent, 429 rate limit / unknown 429 = transient,
+401/403/404/400 = permanent, 500/503/connection/timeout/malformed 200 body = transient. Asserts permanent failures make exactly 1 provider attempt with no backoff sleep; transient failures make exactly `max_attempts`
+with backoff `[1, 2]`; a transient-then-success path still succeeds; no provider text, key or request id appears in exceptions, logs or the API response. Mutation-checked (disabling the quota check fails 6 tests).
 
 ## Planned (not yet written; tracked per phase)
 Embeddings/indexing/search filters/patient isolation/empty
