@@ -63,3 +63,52 @@ not written by the model. Errors:
 The latest generated summary. `is_stale` is true (with `stale_reasons` from `source_records_changed`,
 `prompt_version_changed`, `model_changed`) when it no longer matches the current records or configuration.
 404 `summary_not_found` if none has been generated (failed attempts are never served).
+
+## Semantic search
+> **Demo system: no authentication or authorization.** Anyone who can reach the API can search all patients. `patient_id` filtering is data
+> scoping, not access control. See [SECURITY.md](SECURITY.md).
+
+Index first (explicit, idempotent), then search. FHIR must be generated for a patient before its documents are indexed; summaries are indexed only
+when generated and not stale.
+
+**Embedding mode.** The default is semantic: `all-MiniLM-L6-v2` (`EHR_EMBEDDING_PROVIDER=sentence-transformers`), which needs the `embeddings` extra and a
+one-time model download. If it is unavailable, search and indexing return `503 embedding_provider_unavailable` (message explains the fix). There is **no
+silent fallback**. Lexical mode (`EHR_EMBEDDING_PROVIDER=hashing`) is an explicit choice. Every search response reports the actual mode.
+
+### POST /patients/{id}/index  and  POST /search/reindex
+Reconcile the derived index with SQLite for one patient / all patients. `200 {"patient_id", "indexed", "unchanged", "removed", "skipped": [...]}`
+(`/search/reindex` returns totals plus per-patient `results`). `skipped` codes: `fhir_not_generated`, `document_without_text`,
+`summary_not_available`, `summary_stale`. Errors: 404 `patient_not_found`, 503 `embedding_provider_unavailable`, 503 `search_index_unavailable`.
+
+### GET /search/status
+`200 {"entries_total", "by_resource_type", "by_model", "embedding": {"model_identifier", "kind", "available"}}`. `available: false` means the configured provider
+cannot currently be used (e.g. the extra is not installed); searches will return 503. This call never loads the model.
+
+### POST /search
+Request (unknown fields rejected):
+```json
+{"query": "chest tightness", "patient_id": "optional", "resource_types": ["DocumentReference", "ClinicalSummary"],
+ "date_from": "2024-01-01", "date_to": "2024-12-31", "limit": 5, "min_score": 0.2}
+```
+`query` 1-500 chars (whitespace-normalized); `limit` 1-5 (default 5); `date_from <= date_to`, both inclusive, and records without a date are excluded when a
+bound is set; `min_score` can only raise the similarity floor (results with similarity <= 0 are never returned). Patient/type/date filters are applied
+**before** ranking. `200`:
+```json
+{"query": "chest tightness", "returned": 3, "candidates_considered": 3, "stale_results_dropped": 0, "took_ms": 8.2,
+ "embedding": {"model_identifier": "sentence-transformers/all-MiniLM-L6-v2", "kind": "semantic"},
+ "note": "Scores are embedding similarity, not clinical relevance ...",
+ "results": [{"rank": 1, "resource_type": "DocumentReference", "resource_id": "uuid",
+              "fhir_reference": "DocumentReference/uuid", "link": "/patients/<id>/fhir",
+              "patient_id": "uuid", "record_date": "2024-02-01",
+              "score": 0.6492, "snippet": "...", "source_record_id": "uuid", "ai_generated": false}]}
+```
+- **No patient name, MRN or date of birth is returned** (tested, including the OpenAPI schema). `patient_id` is an opaque internal id; the `snippet` is an
+  excerpt of stored clinical text and contains whatever that text contains. A client that needs a patient's identity must obtain it through a separate,
+  explicitly authorized lookup (none exists yet; there is no patient listing endpoint).
+- `resource_type` is `DocumentReference` (FHIR R4) or `ClinicalSummary` (AI-generated, `ai_generated: true`, `fhir_reference: null`, `link` ->
+  `/patients/<id>/summary`; requires clinician review and is not a verified diagnosis).
+- `score` is cosine similarity of embeddings. The semantic model returns weak runners-up for unrelated text (observed 0.07); use `min_score` to cut them.
+  The score is **not** clinical relevance, diagnostic confidence or a probability.
+- `embedding.kind` is `semantic` (sentence-transformers) or `lexical` (explicit hashing fallback: matches shared words only).
+- Errors: 422 `validation_error` (details: location + rule, never the input), 404 `patient_not_found` (unknown `patient_id`),
+  503 `embedding_provider_unavailable`, 503 `search_index_unavailable`.

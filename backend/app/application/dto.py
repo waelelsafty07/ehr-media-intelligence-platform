@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 
 from app.domain.canonical import ProcessingStatus, SourceFormat, ValidationIssue
 from app.domain.fhir import FhirIssue, FhirStatus
@@ -52,3 +52,45 @@ class FhirGenerationResult:
     resource_counts: dict[str, int] = field(default_factory=dict)
     issues: list[FhirIssue] = field(default_factory=list)
     updated_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class IndexResult:
+    patient_id: str
+    indexed: int  # newly embedded or re-embedded entries
+    unchanged: int  # already current; not re-embedded
+    removed: int  # stale entries deleted
+    skipped: list[str] = field(default_factory=list)  # reason codes for documents that were not indexed
+
+
+@dataclass(frozen=True)
+class SearchResultItem:
+    rank: int
+    resource_type: str
+    resource_id: str
+    patient_id: str  # internal opaque id; no name/MRN/DOB is ever included in search results
+    record_date: date | None
+    score: float  # cosine similarity: NOT clinical relevance or probability
+    snippet: str
+    source_record_id: str | None
+    ai_generated: bool
+
+
+@dataclass(frozen=True)
+class SearchOutcome:
+    items: list[SearchResultItem]
+    candidates_considered: int
+    stale_results_dropped: int
+    took_ms: float
+    embedding_model: str
+    embedding_kind: str
+
+
+@dataclass(frozen=True)
+class SearchStatus:
+    entries_total: int
+    by_resource_type: dict[str, int]
+    by_model: dict[str, int]
+    embedding_model: str
+    embedding_kind: str
+    embedding_available: bool  # False when the configured provider cannot currently be used (e.g. extra not installed)

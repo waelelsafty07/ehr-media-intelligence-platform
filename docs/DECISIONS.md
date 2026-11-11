@@ -240,3 +240,72 @@ Status for each: **Accepted**. "Implemented" notes say what the code actually re
   ourselves with Pydantic. **Alternatives:** `json_schema` strict mode (unverifiable without live access, and stricter
   schema subset), Responses API. **Reasoning:** provider-agnostic validation we fully control and test. **Tradeoffs:**
   relies on the model following the described format; the pipeline re-asks on violations. **Implemented:** yes.
+
+---
+# Phase 5 decisions (2026-11-11)
+
+## D32. SQLite-backed vector store (exact cosine, numpy) behind a `VectorStore` port; not ChromaDB/FAISS
+- **Context:** the earlier plan (D14, original stack) assumed ChromaDB as a derived index. This phase asked for an evidence-based choice.
+  **Verified:** ChromaDB, FAISS and sentence-transformers all resolve on Python 3.12 and 3.14 - there is **no compatibility problem**; ChromaDB would add
+  84 packages (onnxruntime, grpc, kubernetes, ...), FAISS 3, numpy 1. **Decision:** store vectors as float32 BLOBs in the existing SQLite database and score
+  exactly with numpy. **Alternatives:** ChromaDB (original plan), FAISS. **Reasoning:** at this scale ANN buys nothing; one database means no second
+  store to reconcile; patient/type/date filters are plain SQL applied before ranking, which makes strict patient isolation simple and auditable;
+  tests need no extra service or model. **Tradeoffs:** O(n) scan (measured: 130 ms at 20,000 entries, store-only), no ANN, fewer features. **Consequences:**
+  deviates from the original ChromaDB plan; a Chroma/FAISS adapter is a small addition behind the same port if needed.
+- **Implemented:** yes.
+
+## D33. Two embedding providers; every response reports the real mode  *(default superseded by D40)*
+- **Context:** the normal test suite and a fresh clone must not need a download, network or API key; yet semantic search needs a real model.
+  **Decision:** `hashing` (deterministic lexical embedder; default and test double) and `sentence-transformers` all-MiniLM-L6-v2 (optional extra,
+  lazy load, explicit install and download). Responses and status report `embedding.kind`. **Alternatives:** make the model mandatory; ship only
+  a mock. **Reasoning:** reproducible default, genuine semantics available, no silent mislabeling. **Tradeoffs:** the default does not match synonyms
+  (measured: top-1 0.75 vs 1.00 with the real model). **Implemented:** yes (Strategy justified: two real implementations).
+
+## D34. Indexing is a per-patient desired-state reconcile, keyed by content hash
+- **Decision:** desired entries = DocumentReferences of a `generated` FHIR state + the latest generated non-stale summary; embed only entries whose hash
+  (model, type, date, text) changed; upsert, then delete entries no longer desired. **Alternatives:** event-driven incremental updates; delete-and-rebuild.
+  **Reasoning:** one rule covers update, delete and invalidation, is idempotent and trivially retryable, and never reduces the index on failure.
+  **Tradeoffs:** explicit trigger (not automatic); a stale entry can persist until re-index (never shown, see D35). **Implemented:** yes.
+
+## D35. Search re-validates every hit against SQLite; identity never comes from similarity
+- **Decision:** after retrieving candidates (over-fetched), drop any hit whose resource no longer exists, belongs to another patient, changed text,
+  FHIR state not `generated`, or (for summaries) is not the current non-stale summary; also drop hits outside the requested patient scope even if the
+  store returned them. **Alternatives:** trust the index. **Reasoning:** the index is derived and can lag; SQLite is the source of truth; defense in
+  depth for a safety-sensitive boundary. **Tradeoffs:** a few extra reads per query; fewer than `limit` results are possible when candidates are stale.
+  **Implemented:** yes; mutation-checked (disabling each check fails tests).
+
+## D36. Scores are cosine similarity; non-positive similarity is never a result
+- **Context:** a smoke test returned five unrelated documents with score 0.0 for a nonsense query. **Decision:** never return similarity <= 0;
+  `min_score` can only raise the floor; every response carries a note that scores are not clinical relevance or probability. **Implemented:** yes.
+
+## D37. ~~Patient display fields in results: name and MRN, not DOB~~  *(superseded by D39: removed)*
+- **Decision:** results include `patient_id`, `patient_name`, `mrn` (needed by the clinician UI), never date of birth. **Tradeoff:** these identifiers are
+  exposed to any caller because there is no authentication yet. **Consequence:** authorization must precede real use. **Implemented:** yes.
+
+## D38. Local embeddings only; only clinical text is embedded
+- **Decision:** both providers run locally; the embedder receives only document/summary text, never name, MRN or DOB (tested); query text is never
+  logged. **Reasoning:** no patient data leaves the machine for embedding. **Tradeoff:** note text may itself contain identifiers in real data (synthetic here).
+  **Implemented:** yes.
+
+---
+# Phase 5 review adjustments (2026-11-11)
+
+## D39. Search results carry no direct patient identifiers; filtering is not authorization; no fake authentication
+- **Context:** the first version returned `patient_name` and `mrn` in every result and allowed unscoped cross-patient search with no access control (D37).
+  **Decision:** results contain an opaque `patient_id` but never name, MRN or date of birth (tested on responses and the OpenAPI schema); the use case loads the patient only to
+  confirm it exists. The docs state plainly that patient filtering is data scoping, that there is no authentication or authorization, that this is a local demo for synthetic
+  data only, and what production would need ([SECURITY.md](SECURITY.md)). **Alternatives:** keep names/MRNs for the UI; add a placeholder login. **Reasoning:** minimum necessary
+  exposure; a cosmetic auth mechanism would create false assurance; the assessment does not require building authentication. **Tradeoffs:** a clinician UI needs identity for display,
+  which must come from a separate, explicitly authorized lookup (none exists yet; the Phase 6 UI will need a documented decision). The `snippet` can still contain whatever the stored
+  text contains, and other endpoints (FHIR bundle) still return full Patient resources. **Preserved:** SQL patient scoping, the use-case check and the final ownership re-validation.
+- **Implemented:** yes.
+
+## D40. Semantic search (all-MiniLM-L6-v2) is the default; lexical is an explicit fallback; no silent fallback
+- **Context:** the assessment requires semantic search with embeddings; a lexical default (D33) did not meet it. **Decision:** `EHR_EMBEDDING_PROVIDER` defaults to
+  `sentence-transformers` (`all-MiniLM-L6-v2`); `pip install -e "./backend[dev,embeddings]"` and `python backend/scripts/init_embedding_model.py` are part of the documented setup.
+  If the model is unavailable, search and indexing return 503 `embedding_provider_unavailable` with instructions, `/search/status` reports `available`, and startup logs a
+  warning. `EHR_EMBEDDING_PROVIDER=hashing` selects the lexical fallback explicitly; responses always report the actual `kind`. The normal test suite stays offline: the shared
+  fixture chooses the lexical embedder explicitly and an autouse guard blocks `sentence_transformers`, so no test can load or download a model; semantic mode is tested with a faked
+  model, and one opt-in test uses the real one. **Alternatives:** keep lexical default; auto-fallback to lexical when unavailable (rejected: would silently misrepresent
+  results). **Tradeoffs:** heavier setup (~1 GB PyTorch, one-time ~90 MB download), 3.7 s cold start, ~8 ms warm search; a fresh clone without the extra gets 503 on search until set up.
+  **Implemented:** yes; mutation-checked (reverting the default, adding a silent fallback and re-adding identifiers each fail tests).

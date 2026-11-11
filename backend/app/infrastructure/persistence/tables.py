@@ -5,7 +5,18 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Date, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -105,3 +116,22 @@ class ClinicalSummaryRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     __table_args__ = (UniqueConstraint("patient_id", "content_hash", "prompt_version", "model_identifier",
                                        name="uq_summary_cache_key"),)
+
+
+class SearchIndexRow(Base):
+    """Derived semantic-search index entry (rebuildable from fhir_resources + clinical_summaries)."""
+
+    __tablename__ = "search_index_entries"
+    doc_id: Mapped[str] = mapped_column(String(120), primary_key=True)  # "<resource_type>:<resource_id>"
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.patient_id"), index=True)
+    resource_type: Mapped[str] = mapped_column(String(32))
+    resource_id: Mapped[str] = mapped_column(String(64))
+    source_record_id: Mapped[str | None] = mapped_column(String(36))
+    record_date: Mapped[date | None] = mapped_column(Date)
+    text: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    model_identifier: Mapped[str] = mapped_column(String(120), index=True)
+    dimension: Mapped[int] = mapped_column(Integer)
+    embedding: Mapped[bytes] = mapped_column(LargeBinary)
+    indexed_at: Mapped[datetime] = mapped_column(DateTime)
+    __table_args__ = (Index("ix_search_patient_type_date", "patient_id", "resource_type", "record_date"),)

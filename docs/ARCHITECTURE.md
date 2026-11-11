@@ -26,13 +26,13 @@ use cases receive those implementations by constructor injection; only the compo
 ChromaDB, OpenAI, Sentence Transformers, fhir, httpx, or any outer layer, or if `application`
 imports infrastructure/api. Pydantic is allowed in the domain (validation, not I/O).
 
-## What exists today (Phases 1-4)
+## What exists today (Phases 1-5)
 
 [built] app factory, settings, logging/redaction, error envelope, request IDs, `GET /health`, React shell
 (Phase 1); canonical model, normalization, identity policy, JSON/CSV/text ingestion, duplicate
 detection, audit log, SQLite persistence, `POST /ingest` (Phase 2); FHIR R4 mapping, validation, persistence and
-endpoints (Phase 3); grounded AI summaries with an OpenAI adapter, caching and validation (Phase 4). Embeddings and
-search are **[planned]**.
+endpoints (Phase 3); grounded AI summaries with an OpenAI adapter, caching and validation (Phase 4). Semantic search over FHIR documents and
+summaries (Phase 5).
 
 | Path | Contents (Phase 2) |
 |---|---|
@@ -52,7 +52,10 @@ search are **[planned]**.
 | `domain/summary.py`, `domain/ports/llm.py` | Summary schemas, context building, grounding checks; `LLMProvider` port |
 | `application/summary/`, `application/use_cases/` (summary) | Versioned prompt; `GenerateClinicalSummaryUseCase`, `GetPatientSummaryUseCase` |
 | `infrastructure/llm/` | `OpenAIAdapter` (only code importing `openai`), `UnconfiguredLLMProvider`, `build_llm_provider` |
-| `api/` | `summaries.py` (2 thin routes), `fhir.py` (3 thin routes), `ingest.py` (thin route), `schemas.py`, `dependencies.py` (composition root), `domain_errors.py` |
+| `domain/search.py`, `domain/ports/search.py` | Query validation, indexed-document model, text/date extraction, snippets; `EmbeddingProvider` and `VectorStore` ports |
+| `application/use_cases/` (search) | `IndexClinicalRecordsUseCase`, `SearchClinicalRecordsUseCase`, `GetSearchStatusUseCase` |
+| `infrastructure/search/` | `HashingEmbeddingProvider`, `SentenceTransformerEmbeddingProvider` (optional), `SqliteVectorStore`; the only code importing `numpy` / `sentence_transformers` |
+| `api/` | `search.py` (4 thin routes), `summaries.py` (2 thin routes), `fhir.py` (3 thin routes), `ingest.py` (thin route), `schemas.py`, `dependencies.py` (composition root), `domain_errors.py` |
 
 ## Ingestion design (built)
 
@@ -130,6 +133,55 @@ patient's completed records (SQLite) -> context (isolation re-checked, newest fi
   permanent errors stop at once; SDK error text is never propagated (it can echo credentials). The app starts without
   an API key; generation then returns 503.
 - Evaluation and human-review rubric: [AI_EVALUATION.md](AI_EVALUATION.md). Endpoint contracts: [API_CONTRACTS.md](API_CONTRACTS.md).
+
+## Semantic search (built, Phase 5)
+
+Details of the decision: D32-D38 in [DECISIONS.md](DECISIONS.md). Schema: [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md).
+
+```
+index:  fhir_resources(DocumentReference text) + latest generated NON-STALE summary
+         -> desired entries per patient -> embed only changed (content hash) -> upsert -> delete no-longer-desired
+search: query -> embed -> SQL filters (patient/type/date/model) BEFORE ranking -> exact cosine (numpy) over the filtered rows
+         -> re-validate every hit against SQLite -> rank (score, date, id) -> top <=5 with snippets + patient display
+```
+- **Vector store:** a table in the existing SQLite database (float32 BLOBs), exact cosine, behind the `VectorStore` port. Chosen over
+  ChromaDB/FAISS for fit and simplicity (D32); a Chroma adapter would be a small addition behind the same port.
+- **Embeddings:** `EmbeddingProvider` port with two implementations. **Default: `sentence-transformers`** - the real local semantic model
+  `all-MiniLM-L6-v2` (needs the `embeddings` extra and a one-time model download; loaded lazily). `hashing`: deterministic lexical embedder
+  (shared words only) - an **explicit fallback** and the test double. If the semantic model is unavailable the endpoints return a clear 503; the
+  application never silently falls back or mislabels lexical results as semantic. Every response reports the actual `embedding.kind` (D33, D40).
+- **Index = desired-state reconcile per patient:** one rule handles updates (hash changes), deletions (FHIR regenerated, resource gone, FHIR
+  invalid/failed) and invalidation (summary stale/failed/missing). Idempotent; retry after any failure is safe; upsert happens before delete so a
+  failure never leaves a patient with fewer entries (D34). The index is derived: wiping it and re-indexing reproduces identical results (tested).
+- **Patient scoping in search (data separation, NOT authorization):** (1) the patient filter is a SQL `WHERE` so a scoped query never loads other patients' vectors (tested with a spy);
+  (2) the use case drops any hit whose patient differs from the filter even if a store misbehaves (tested with a deliberately leaky store);
+  (3) each hit is re-validated against SQLite (resource exists, belongs to the hit's patient, text unchanged, summary is the current
+  non-stale one), so patient identity comes from stored records, never from similarity or index metadata (D35). These are correctness controls:
+  the system has no authentication or authorization, so any caller may omit `patient_id` and search every patient (see [SECURITY.md](SECURITY.md)).
+- **No direct identifiers in search results:** results carry an opaque `patient_id` but never name, MRN or date of birth; the use case loads the patient
+  only to confirm it exists (D39). The `snippet` is stored clinical text and contains whatever that text contains.
+- **No identifiers to the embedder:** only document text / summary text is embedded, never name, MRN or DOB (tested). Both providers run locally.
+- **Score semantics:** cosine similarity; non-positive similarity is never returned; not clinical relevance or probability (D36).
+- **Logging:** query text is never logged (it may contain identifiers); counts and latency only.
+
+**Measured (synthetic, `backend/scripts/benchmark_search.py`; macOS arm64, 10 CPUs, Python 3.12.14; one run each, not a statistical study):**
+
+Re-run after the default changed to semantic and names/MRNs were removed from results (second run; the first, before these changes, gave 7.6 ms p50 for the real
+model - run-to-run variation is about 0.5 ms).
+
+| | **semantic (default)** all-MiniLM-L6-v2 | lexical fallback (`hashing`) |
+|---|---|---|
+| Cold start: first embedding call in a new process | **3.7 s** with the model on disk; ~50 s the very first time in a fresh environment (26 s torch import + 24.6 s load incl. download) | 0 s |
+| Index 50 records (reindex); second run | 0.38 s; 0 re-embedded | 0.07 s; 0 re-embedded |
+| **Warm search, 50 records, over HTTP**: p50 / p95 / max (60 requests) | **8.0 / 8.8 / 9.9 ms** | 3.1 / 4.0 / 4.4 ms |
+| Patient-scoped search p50 | 4.7 ms | 1.6 ms |
+| Topic relevance, 20 queries worded unlike the notes: top-1 correct / precision@5 | **1.00 / 0.89** | 0.75 / 0.45 |
+
+The target (< 2 s for 50 records) is met by a wide margin for warm searches in either mode; the only slow step is the one-time model
+load, reported separately. `backend/tests/integration/test_search_performance.py` guards the budget (< 2 s, 50 records, hashing). Exact-scan
+growth, store-only with random 384-d vectors: 50 -> 0.3 ms, 1,000 -> 3.5 ms, 5,000 -> 27.8 ms, 20,000 -> 130 ms (linear). I have not measured
+beyond 20,000 entries; patient-scoped queries scan only that patient's rows. The relevance set is small, synthetic and author-written: it shows the
+lexical-vs-semantic gap, not clinical retrieval quality.
 
 ## FHIR design (built, Phase 3)
 
@@ -237,3 +289,20 @@ Vite dev server proxies `/api/*` to the backend. **[built]** shell only; UI is P
 - Sending clinical text to a third-party provider requires appropriate agreements for real data; this project uses
   synthetic data only and makes no compliance claim.
 - Records held for identity review (`needs_review`) are not linked to a patient and therefore not summarized.
+
+## Known limitations (Phase 5)
+- **Semantic mode has setup requirements.** The default needs the `embeddings` extra (PyTorch, ~1 GB) and a one-time model download. Without them search
+  returns 503 by design (no silent fallback). The explicit lexical fallback matches shared (lightly stemmed) words only ("dyspnea" will not find "shortness of
+  breath"). Tradeoff accepted (D40): a heavier, slower-to-set-up default in exchange for search that is genuinely semantic out of the box.
+- Indexing is an explicit step (`POST /patients/{id}/index` / `POST /search/reindex`), not automatic after ingestion/FHIR/summary changes;
+  until re-indexed, new documents are not searchable. Stale entries are never *shown* (validated at query time) but can occupy candidate slots.
+- **No authentication or authorization (demo system, synthetic data only).** Any caller can omit `patient_id` and search all patients; patient filtering is data
+  scoping, not access control. Search results omit names/MRNs, but other endpoints do not: `GET /patients/{id}/fhir` returns the full Patient resource.
+  A production deployment would need authenticated users, authorization checks and patient-level access policies. See [SECURITY.md](SECURITY.md).
+- Exact O(n) scan: measured to 20,000 entries (130 ms store-only); beyond that use an ANN-backed adapter. No caching of vectors between queries.
+- all-MiniLM-L6-v2 truncates inputs beyond ~256 word pieces; there is no chunking, so the tail of a long note is not searchable.
+- Only DocumentReference text and AI summaries are indexed (not DiagnosticReport, canonical diagnoses or other resources); no keyword/metadata
+  re-ranking; snippets are a fixed-length excerpt, not highlighted passages.
+- Records without a date are excluded when a date bound is set. A summary's date is its most recent source-record date.
+- Scores are similarity, not clinical relevance; the quality evaluation is small and synthetic. The real model is exercised in the benchmark and
+  by one opt-in test (`EHR_RUN_REAL_EMBEDDING_TESTS=1`); the default test run uses the lexical embedder or a faked model and is fully offline.

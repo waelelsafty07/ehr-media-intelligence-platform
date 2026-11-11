@@ -13,8 +13,13 @@ from app.application.use_cases.get_patient_fhir import (
     GetPatientFHIRStatusUseCase,
 )
 from app.application.use_cases.get_patient_summary import GetPatientSummaryUseCase
+from app.application.use_cases.index_clinical_records import IndexClinicalRecordsUseCase
 from app.application.use_cases.ingest_patient_records import IngestPatientRecordsUseCase
 from app.application.use_cases.resolve_patient_identity import ResolvePatientIdentityUseCase
+from app.application.use_cases.search_clinical_records import (
+    GetSearchStatusUseCase,
+    SearchClinicalRecordsUseCase,
+)
 from app.infrastructure.fhir.r4b_builder import R4BBundleBuilder
 from app.infrastructure.fhir.r4b_validator import R4BSchemaValidator
 from app.infrastructure.persistence.unit_of_work import SqlAlchemyUnitOfWork
@@ -62,3 +67,20 @@ def get_generate_summary_use_case(request: Request) -> GenerateClinicalSummaryUs
 def get_summary_use_case(request: Request) -> GetPatientSummaryUseCase:
     return GetPatientSummaryUseCase(_uow_factory(request), request.app.state.llm_provider.model_identifier,
                                     _summary_config(request))
+
+
+def get_index_use_case(request: Request) -> IndexClinicalRecordsUseCase:
+    st = request.app.state
+    return IndexClinicalRecordsUseCase(_uow_factory(request), st.embedding_provider, st.vector_store,
+                                       get_summary_use_case(request))
+
+
+def get_search_use_case(request: Request) -> SearchClinicalRecordsUseCase:
+    st = request.app.state
+    return SearchClinicalRecordsUseCase(_uow_factory(request), st.embedding_provider, st.vector_store,
+                                        get_summary_use_case(request))
+
+
+def get_search_status_use_case(request: Request) -> GetSearchStatusUseCase:
+    st = request.app.state
+    return GetSearchStatusUseCase(st.embedding_provider, st.vector_store)

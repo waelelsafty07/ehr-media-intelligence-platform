@@ -68,3 +68,12 @@ def test_openai_sdk_is_confined_to_infrastructure_llm():
             if (imp == "openai" or imp.startswith("openai.")) and file.relative_to(APP).parts[:2] != ("infrastructure", "llm"):
                 offenders.append(f"{file.relative_to(APP)} imports {imp}")
     assert offenders == []
+
+
+def test_numpy_and_sentence_transformers_are_confined_to_infrastructure_search():
+    offenders = []
+    for file in APP.rglob("*.py"):
+        for imp in _imports(file):
+            if imp.split(".")[0] in {"numpy", "sentence_transformers"} and file.relative_to(APP).parts[:2] != ("infrastructure", "search"):
+                offenders.append(f"{file.relative_to(APP)} imports {imp}")
+    assert offenders == []

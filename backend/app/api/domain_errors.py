@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request
 
 from app.core.errors import build_error_response
 from app.domain.errors import (
+    EmbeddingUnavailableError,
     FhirGenerationFailedError,
     FhirNotAvailableError,
     FhirValidationFailedError,
@@ -15,6 +16,7 @@ from app.domain.errors import (
     SummaryGenerationFailedError,
     SummaryNotFoundError,
     UnsupportedFormatError,
+    VectorStoreError,
 )
 
 _MAPPING = {
@@ -27,6 +29,8 @@ _MAPPING = {
     NoSourceRecordsError: (409, "no_source_records"),
     SummaryNotFoundError: (404, "summary_not_found"),
     LLMNotConfiguredError: (503, "ai_provider_not_configured"),
+    EmbeddingUnavailableError: (503, "embedding_provider_unavailable"),
+    VectorStoreError: (503, "search_index_unavailable"),
 }
 
 

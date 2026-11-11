@@ -2,8 +2,15 @@
 
 A technical-assessment project that ingests heterogeneous healthcare records, normalizes them, resolves
 patient identity conservatively, transforms them to FHIR R4, generates grounded AI clinical summaries,
-and (planned) exposes semantic search in a clinician UI. **Synthetic data only. Not a medical device. No HIPAA
-compliance claim has been made or assessed.**
+searches them semantically,
+and (planned) presents them in a clinician UI.
+
+> **LOCAL ASSESSMENT / DEMO SYSTEM. Do not use it with real patient data.**
+> It has **no authentication and no authorization**: anyone who can reach the API can read and modify all data, including patient names, MRNs
+> and dates of birth (the FHIR endpoint returns full Patient resources). Patient filtering in search is data scoping, **not** access control.
+> Not a medical device; AI output is unverified; no HIPAA or other compliance claim has been made or assessed.
+> A production deployment would need authenticated users, authorization checks and patient-level access policies, encryption, audit review and
+> a compliance assessment (see [docs/SECURITY.md](docs/SECURITY.md)).
 
 ## Implementation status
 
@@ -13,7 +20,7 @@ compliance claim has been made or assessed.**
 | Task 1: Data ingestion and cleaning (JSON/CSV/text) | **Implemented** |
 | Task 2: FHIR R4 transformation and validation | **Implemented** (Patient, DocumentReference, DiagnosticReport, Bundle) |
 | Task 3: AI clinical summaries (OpenAI) | **Implemented, not live-tested** (verified with fakes and the real SDK over a mocked transport; never run against the live OpenAI API) |
-| Task 4: Semantic search | Not implemented |
+| Task 4: Semantic search | **Implemented** (`POST /search`; default = real `all-MiniLM-L6-v2` embeddings, which need the `embeddings` extra; lexical mode is an explicit fallback) |
 | Task 5: Clinician interface | Not implemented (a placeholder page only checks `/health`) |
 
 Everything below describes what exists unless it is explicitly marked **planned**.
@@ -70,9 +77,11 @@ replaced atomically, state `generated` (`invalid`/`failed` serve nothing). See [
 AI summary flow: patient-scoped records -> context -> cache lookup -> `LLMProvider` (OpenAI adapter) -> parse + strict
 schema -> grounding checks -> persist; details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-**Planned (not built):** embeddings (`all-MiniLM-L6-v2`) and ChromaDB as a rebuildable search index with
-SQLite as source of truth, `POST /search`, and the clinician UI. Design rationale is in
-[docs/DECISIONS.md](docs/DECISIONS.md); those decisions are marked there as not yet implemented.
+Search flow: FHIR DocumentReference text + current AI summaries -> embeddings -> vector rows in SQLite (a derived, rebuildable index) ->
+`POST /search` applies patient/type/date filters before ranking, ranks by cosine similarity, re-validates every hit against SQLite, and returns
+at most 5 results with scores, snippets and links. Why a SQLite vector store and not ChromaDB: D32 in [docs/DECISIONS.md](docs/DECISIONS.md).
+
+**Planned (not built):** the clinician UI.
 
 ## Technology stack (actual dependencies)
 
@@ -84,14 +93,18 @@ SQLite as source of truth, `POST /search`, and the clinician UI. Design rational
 | python-multipart | File upload parsing |
 | fhir.resources (R4B namespace, FHIR 4.3.0) | FHIR R4 resource models and structural validation |
 | openai (SDK) | Chat Completions client, used only by `OpenAIAdapter` |
+| numpy | Exact cosine scoring in the SQLite vector store |
+| sentence-transformers (optional extra) | Real local embeddings, `all-MiniLM-L6-v2` (pulls in torch) |
 | pytest, httpx, Ruff (dev) | Tests, FastAPI test client, lint |
 | React, Vite, TypeScript, Tailwind CSS, Vitest (frontend) | UI shell and tests |
 
 ## Prerequisites
 
-- Python 3.11 or newer (verified on 3.12.14 and 3.14.7).
+- Python 3.11 or newer (verified on 3.12.14 and 3.14.7, both including the `embeddings` extra: PyTorch 2.15.0, sentence-transformers 6.2.0).
 - Node.js 22.12 or newer (verified on 24.19.0) and npm (verified 11.17.0). Vitest 5 requires Node 22.12+.
 - Git.
+- For the default (semantic) search mode: about 1 GB of disk for the `embeddings` extra (it installs PyTorch) and network access **once** to download the
+  `all-MiniLM-L6-v2` model (~90 MB) from the Hugging Face Hub. After that it runs fully offline and locally.
 
 ## Installation and setup
 
@@ -103,11 +116,15 @@ cd ehr-media-intelligence-platform
 
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e "./backend[dev]"
+pip install -e "./backend[dev,embeddings]"      # `embeddings` = sentence-transformers + PyTorch (needed for the default semantic search)
 cp backend/.env.example backend/.env
+python backend/scripts/init_embedding_model.py  # downloads/verifies all-MiniLM-L6-v2 (network once); prints "OK" when ready
 
 cd frontend && npm ci && cd ..
 ```
+
+Do you only want to run the tests or the lexical fallback? `pip install -e "./backend[dev]"` is enough: the test suite is fully offline and never downloads
+a model. Without the extra, the default semantic mode answers search requests with a clear `503` (see "Search modes"), and nothing else is affected.
 
 Windows (PowerShell). These commands are the equivalents but **were not tested on Windows**:
 
@@ -116,8 +133,9 @@ git clone <repository-url> ehr-media-intelligence-platform
 cd ehr-media-intelligence-platform
 py -3 -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install -e ".\backend[dev]"
+pip install -e ".\backend[dev,embeddings]"
 copy backend\.env.example backend\.env
+python backend\scripts\init_embedding_model.py
 cd frontend; npm ci; cd ..
 ```
 
@@ -137,6 +155,8 @@ cd frontend; npm ci; cd ..
 | `EHR_OPENAI_TIMEOUT_SECONDS`, `EHR_OPENAI_TEMPERATURE` | `30`, `0.0` | Request timeout; sampling temperature (empty omits it) |
 | `EHR_SUMMARY_MAX_ATTEMPTS`, `EHR_SUMMARY_RETRY_BASE_SECONDS` | `3`, `1.0` | Attempt budget (transient errors + invalid output); backoff base |
 | `EHR_SUMMARY_MAX_CONTEXT_RECORDS`, `EHR_SUMMARY_MAX_CHARS_PER_RECORD`, `EHR_SUMMARY_MAX_OUTPUT_TOKENS` | `20`, `4000`, `1200` | Context and output limits |
+| `EHR_EMBEDDING_PROVIDER` | `sentence-transformers` | **Default: real semantic embeddings** (`all-MiniLM-L6-v2`; needs the `embeddings` extra). `hashing` = deterministic **lexical** embedder (shared words only): an explicit fallback you must choose; tests use it |
+| `EHR_EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Model used when the provider is `sentence-transformers` |
 
 `EHR_CORS_ORIGINS` (JSON list, default `["http://localhost:5173"]`) can also be set. Never commit `.env` or real keys.
 
@@ -239,14 +259,65 @@ evidence-coverage heuristic, **not** a probability or model confidence), `genera
 | 502 `summary_generation_failed` | After retries; `details[0].reason` is provider_unavailable, provider_timeout, provider_rejected, invalid_output or persistence_error. Call POST again to retry |
 | 503 `ai_provider_not_configured` | No API key configured |
 
-Errors share one envelope: `{"error": {"code", "message", "request_id", "details"?}}`. There are no
-`/patients` listing or `/search` endpoints yet.
+### Search endpoints
+Indexing is an explicit, idempotent step: FHIR must be generated first (`POST /patients/{id}/fhir`); summaries are indexed only when generated and
+not stale. Contracts: [docs/API_CONTRACTS.md](docs/API_CONTRACTS.md).
+
+```bash
+curl -X POST http://localhost:8000/search/reindex                    # index every patient (second call: indexed 0, unchanged N)
+curl -X POST http://localhost:8000/patients/<patient_id>/index       # or one patient
+curl http://localhost:8000/search/status                             # entries, models, embedding kind
+curl -X POST http://localhost:8000/search -H 'content-type: application/json' \
+  -d '{"query": "chest tightness on exertion", "limit": 5}'
+curl -X POST http://localhost:8000/search -H 'content-type: application/json' \
+  -d '{"query": "cough", "patient_id": "<patient_id>", "resource_types": ["DocumentReference"], "date_from": "2024-01-01", "date_to": "2024-12-31"}'
+```
+Each result has `rank`, `resource_type` (`DocumentReference` or AI-generated `ClinicalSummary`), `resource_id`, `fhir_reference`, `link`, `patient_id`
+(an opaque internal id), `record_date`, `score`, `snippet`, `source_record_id`, `ai_generated`. **Results contain no patient name, MRN or date of birth**
+(the `snippet` is an excerpt of the stored clinical text, so it can contain whatever that text contains). `score` is embedding similarity, **not** clinical relevance
+or probability. The response states the actual mode in `embedding` (`model_identifier`, `kind`: `semantic` or `lexical`). The semantic model also returns weak runners-up (e.g. 0.07 for an unrelated
+note), so use `min_score` (e.g. `0.25`) to cut low-similarity results; results with similarity <= 0 are never returned. Limit is at most 5. Unknown fields, blank queries, bad dates or types
+return 422; an unknown `patient_id` returns 404; an unavailable embedder or index returns 503.
+
+| Status | Meaning |
+|---|---|
+| 422 `validation_error` | Invalid request (details list locations, never the input) |
+| 404 `patient_not_found` | Unknown `patient_id` filter |
+| 503 `embedding_provider_unavailable` | Provider not usable (e.g. `sentence-transformers` selected but the extra is not installed) |
+| 503 `search_index_unavailable` | Vector store failure |
+
+#### Search modes
+**Default: semantic.** `EHR_EMBEDDING_PROVIDER=sentence-transformers` with `all-MiniLM-L6-v2`, running locally. One-time setup (already part of "Installation"):
+```bash
+pip install -e "./backend[embeddings]"           # sentence-transformers + PyTorch (~1 GB)
+python backend/scripts/init_embedding_model.py   # downloads the model once (needs network), verifies it, exits 0 when ready
+```
+The model loads lazily on the first request (cold start ~4 s with the model on disk; ~50 s the very first time in a fresh environment), so the app starts
+instantly. `GET /search/status` shows `embedding.available` (is the library installed?) and the app logs a warning at startup if it is not.
+
+**If the semantic model is unavailable** (extra not installed, model cannot be loaded), search and indexing return `503 embedding_provider_unavailable` with
+instructions. The application **never silently falls back** to lexical search and never labels lexical results as semantic.
+
+**Explicit lexical fallback** (no PyTorch, no download): set `EHR_EMBEDDING_PROVIDER=hashing` in `backend/.env` and restart. It is a deterministic bag-of-words
+embedder: it matches shared (lightly stemmed) words only, so "dyspnea" will not find "shortness of breath". Responses then report `"kind": "lexical"`.
+Switching mode re-embeds on the next `POST /search/reindex`; vectors from different models are never compared.
+
+The test suite always uses the lexical embedder (or a faked model) and a guard blocks any real model load, so `pytest` is offline. Optional real-model test:
+`EHR_RUN_REAL_EMBEDDING_TESTS=1 pytest backend/tests/optional -v`.
+
+#### Benchmark
+`python backend/scripts/benchmark_search.py` (default = semantic; `--provider hashing` for the lexical fallback; `--scale 1000,5000,20000` for store scaling).
+Measured results, conditions and caveats are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): with the default semantic mode, warm search over 50 records took a
+median of 8.0 ms (max 9.9 ms); the lexical fallback 3.1 ms.
+
+Errors share one envelope: `{"error": {"code", "message", "request_id", "details"?}}`. There is no `/patients` listing endpoint yet.
 
 ## Sample data
 
 [data/samples/](data/samples/) holds fabricated records with deliberate defects:
 - `records.json`: a clean record; a reformatted duplicate of it; a record with no date of birth; a patient with the
   same name but a different DOB and MRN (stays a separate patient).
+- Search demo: ingest the sample files, call `POST /patients/{id}/fhir` for each patient, then `POST /search/reindex` and `POST /search`.
 - `records_for_summary.json`: two notes for one patient (hedged finding, history, resolved symptom) for the summary demo.
 - `records_with_diagnoses.json`: records that state diagnoses, for the FHIR demo (DocumentReference + DiagnosticReport).
 - `records.csv`: a clean row and a row with an impossible date (`31/02/1990`, rejected).
@@ -261,7 +332,7 @@ ruff check backend           # lint
 
 cd frontend && npm test      # frontend (Vitest)
 ```
-Current result: 301 backend tests, 2 frontend tests, lint clean. No network or API key is needed.
+Current result: 463 backend tests passed + 1 opt-in test skipped, 2 frontend tests, lint clean. No network or API key is needed.
 Strategy and coverage map: [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md).
 
 ## Design decisions
@@ -270,12 +341,18 @@ Strategy and coverage map: [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md).
 - Decision records with alternatives and tradeoffs: [docs/DECISIONS.md](docs/DECISIONS.md)
 - Testing: [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md)
 - API contracts: [docs/API_CONTRACTS.md](docs/API_CONTRACTS.md)
+- Database schema: [docs/DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md)
 - AI evaluation and human-review rubric: [docs/AI_EVALUATION.md](docs/AI_EVALUATION.md)
 - FHIR mapping, version compatibility evidence and validation limits: [docs/FHIR_MAPPING.md](docs/FHIR_MAPPING.md)
 
 ## Limitations and future work
 
-- Tasks 4-5 are not implemented (see status table).
+- Task 5 (clinician UI) is not implemented (see status table).
+- Search: semantic mode needs the `embeddings` extra and a one-time model download (otherwise 503, no silent fallback); the lexical fallback matches shared
+  words only; indexing is an explicit step, not automatic; exact scan measured only to 20,000 entries; long texts are truncated by the model (~256 word
+  pieces, no chunking); only DocumentReference text and AI summaries are indexed; the quality evaluation is small, synthetic and author-written.
+- **Security: no authentication or authorization (see the banner and [docs/SECURITY.md](docs/SECURITY.md)).** Any caller can search across patients by
+  omitting `patient_id`. Search results omit names/MRNs, but other endpoints do not (the FHIR bundle contains full Patient resources). Demo only.
 - AI summaries, safety: **AI-generated, not verified.** A summary must be reviewed by a qualified clinician before any use. It must never be
   presented as a verified diagnosis or as medical advice; the response carries a disclaimer to that effect.
 - **Evidence quotes show textual traceability, not clinical correctness.** A correctly cited, verbatim quote can still sit
@@ -294,7 +371,7 @@ Strategy and coverage map: [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md).
 - A changed source record is stored as a new record (no supersede logic); existing patient demographics are never updated.
 - Identical raw records repeated inside one file are reported as already ingested.
 - Tables are created at startup (`create_all`); there is no migration tool.
-- No authentication or authorization: run on localhost only. Not HIPAA-assessed.
+- No authentication or authorization: run on localhost only, with synthetic data only. Not HIPAA-assessed.
 
 ## Troubleshooting
 
@@ -305,6 +382,9 @@ Strategy and coverage map: [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md).
 - Start `uvicorn` from `backend/`: a relative `EHR_DATABASE_URL` (the `.env.example` default) is resolved against the current directory, so starting elsewhere creates the database elsewhere.
 - Port 8000 already in use: start the backend on another port (`uvicorn app.main:app --port 8001`) and run the frontend with `API_PROXY_TARGET=http://localhost:8001 npm run dev`.
 - Frontend says "Backend unreachable": start the backend on port 8000 first.
+- Search returns no results: documents are searchable only after `POST /patients/{id}/fhir` and then `POST /search/reindex` (or `/patients/{id}/index`).
+- `503 embedding_provider_unavailable` from search: install the extra (`pip install -e "./backend[embeddings]"`), run `python backend/scripts/init_embedding_model.py`
+  (the one-time model download needs to reach the Hugging Face Hub), or explicitly choose the lexical fallback with `EHR_EMBEDDING_PROVIDER=hashing`.
 - `503 ai_provider_not_configured`: set `EHR_OPENAI_API_KEY` in `backend/.env` and restart the backend.
 - `502 summary_generation_failed` with `invalid_output`: the model's output failed the grounding checks on every attempt (nothing is stored or served); retry, or inspect the model/prompt. With `provider_rejected`, check the key, model name and account access.
 - `npm test` fails on syntax/engine errors: check `node --version` (needs 22.12+).

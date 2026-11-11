@@ -108,3 +108,15 @@ class SummaryGenerationFailedError(DomainError):
     def __init__(self, reason: str) -> None:
         super().__init__("Summary generation failed. It can be retried.")
         self.reason = reason
+
+
+class SearchInfrastructureError(DomainError):
+    """Base for search/indexing infrastructure failures. Messages are generic (no provider text)."""
+
+
+class EmbeddingUnavailableError(SearchInfrastructureError):
+    """The embedding provider is missing, could not load its model, or failed while embedding."""
+
+
+class VectorStoreError(SearchInfrastructureError):
+    """The vector store could not be read or written."""

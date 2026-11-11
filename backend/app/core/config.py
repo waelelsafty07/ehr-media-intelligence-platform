@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -31,6 +32,12 @@ class Settings(BaseSettings):
     summary_max_context_records: int = 20
     summary_max_chars_per_record: int = 4000
     summary_max_output_tokens: int = 1200
+
+    # Semantic search. DEFAULT "sentence-transformers" = real local semantic model all-MiniLM-L6-v2 (needs the `embeddings`
+    # extra and a one-time model download). If it is unavailable, searches fail with a clear 503: there is NO silent fallback.
+    # "hashing" = deterministic LEXICAL embedder (shared words only): an explicit fallback you must choose, also used by tests.
+    embedding_provider: Literal["sentence-transformers", "hashing"] = "sentence-transformers"
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 @lru_cache

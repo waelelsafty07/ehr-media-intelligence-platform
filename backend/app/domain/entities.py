@@ -59,6 +59,8 @@ class AuditEventType(StrEnum):
     SUMMARY_GENERATED = "summary_generated"
     SUMMARY_CACHE_HIT = "summary_cache_hit"
     SUMMARY_FAILED = "summary_failed"
+    INDEX_COMPLETED = "index_completed"
+    INDEX_FAILED = "index_failed"
 
 
 class AuditEvent(BaseModel):
