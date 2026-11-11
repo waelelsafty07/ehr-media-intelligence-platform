@@ -3,7 +3,7 @@
 A technical-assessment project that ingests heterogeneous healthcare records, normalizes them, resolves
 patient identity conservatively, transforms them to FHIR R4, generates grounded AI clinical summaries,
 searches them semantically,
-and (planned) presents them in a clinician UI.
+and presents them in a clinician search UI.
 
 > **LOCAL ASSESSMENT / DEMO SYSTEM. Do not use it with real patient data.**
 > It has **no authentication and no authorization**: anyone who can reach the API can read and modify all data, including patient names, MRNs
@@ -19,7 +19,7 @@ and (planned) presents them in a clinician UI.
 | Foundation (API skeleton, logging, config, tests) | **Implemented** |
 | Task 1: Data ingestion and cleaning (JSON/CSV/text) | **Implemented** |
 | Task 2: FHIR R4 transformation and validation | **Implemented** (Patient, DocumentReference, DiagnosticReport, Bundle) |
-| Task 3: AI clinical summaries (OpenAI) | **Implemented, not live-tested** (verified with fakes and the real SDK over a mocked transport; never run against the live OpenAI API) |
+| Task 3: AI clinical summaries (OpenAI) | **Implemented; one live OpenAI request verified** (fakes, the real SDK over a mocked transport, a local HTTP stub, and a single real `gpt-4o-mini` call that passed the application's own checks; see "Live OpenAI verification"). Not clinically validated |
 | Task 4: Semantic search | **Implemented** (`POST /search`; default = real `all-MiniLM-L6-v2` embeddings, which need the `embeddings` extra; lexical mode is an explicit fallback) |
 | Task 5: Clinician interface | **Implemented** (React search UI: filters, ranked cards, detail drawer; verified with mocked-API tests and a one-off real-Chrome smoke test) |
 
@@ -63,7 +63,7 @@ api (FastAPI routes, schemas, DI)  ->  application (use cases, ingestion strateg
   ingestion strategies selected by `IngestionStrategyFactory`.
 - `backend/app/infrastructure/persistence`: SQLAlchemy tables, repositories, unit of work (SQLite).
 - `backend/app/api`, `backend/app/core`: HTTP layer; settings, logging, error envelope.
-- `frontend/`: React + Vite + Tailwind placeholder.
+- `frontend/`: React + Vite + TypeScript + Tailwind clinician search UI (`src/api` client, `src/components`, `src/hooks`).
 
 Ingestion data flow: upload -> strategy parses structure -> store raw record (`received`) -> normalize ->
 duplicate check -> identity decision -> patient/status/audit written in one transaction -> response.
@@ -81,7 +81,7 @@ Search flow: FHIR DocumentReference text + current AI summaries -> embeddings ->
 `POST /search` applies patient/type/date filters before ranking, ranks by cosine similarity, re-validates every hit against SQLite, and returns
 at most 5 results with scores, snippets and links. Why a SQLite vector store and not ChromaDB: D32 in [docs/DECISIONS.md](docs/DECISIONS.md).
 
-**Planned (not built):** the clinician UI.
+UI flow: the UI calls `/search`, then (separately) `GET /patients/{id}/display` for names/MRNs, and `GET /patients/{id}/fhir/resources/...` or `/summary` for the detail drawer.
 
 ## Technology stack (actual dependencies)
 
@@ -111,7 +111,7 @@ at most 5 results with scores, snippets and links. Why a SQLite vector store and
 macOS / Linux:
 
 ```bash
-git clone <repository-url> ehr-media-intelligence-platform
+git clone https://github.com/waelelsafty07/ehr-media-intelligence-platform.git
 cd ehr-media-intelligence-platform
 
 python3 -m venv .venv
@@ -129,7 +129,7 @@ a model. Without the extra, the default semantic mode answers search requests wi
 Windows (PowerShell). These commands are the equivalents but **were not tested on Windows**:
 
 ```powershell
-git clone <repository-url> ehr-media-intelligence-platform
+git clone https://github.com/waelelsafty07/ehr-media-intelligence-platform.git
 cd ehr-media-intelligence-platform
 py -3 -m venv .venv
 .venv\Scripts\Activate.ps1
@@ -339,7 +339,7 @@ ruff check backend           # lint
 
 cd frontend && npm test      # frontend (Vitest)
 ```
-Current result: 463 backend tests passed + 1 opt-in test skipped, 2 frontend tests, lint clean. No network or API key is needed.
+Current result: 503 backend tests passed + 1 opt-in test skipped, 24 frontend tests, lint clean, production build OK. No network or API key is needed.
 Strategy and coverage map: [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md).
 
 ## Design decisions
@@ -351,6 +351,16 @@ Strategy and coverage map: [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md).
 - Database schema: [docs/DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md)
 - AI evaluation and human-review rubric: [docs/AI_EVALUATION.md](docs/AI_EVALUATION.md)
 - FHIR mapping, version compatibility evidence and validation limits: [docs/FHIR_MAPPING.md](docs/FHIR_MAPPING.md)
+- One-page technical write-up: [docs/TECHNICAL_WRITEUP.pdf](docs/TECHNICAL_WRITEUP.pdf); delivery checklist: [docs/DELIVERY_CHECKLIST.md](docs/DELIVERY_CHECKLIST.md)
+
+## Live OpenAI verification
+One controlled live request was made with the synthetic fixture `data/samples/records_for_summary.json` and an isolated temporary SQLite database; no mock, stub or proxy; the application's own code path, one provider attempt, no retries.
+- Real OpenAI API, HTTP 200; model `gpt-4o-mini-2024-07-18` (configured `gpt-4o-mini`); `finish_reason: stop`; 975 total tokens reported by the SDK.
+- Passed: structured schema; 46 words (limit 200); evidence grounding (cited record ids exist, evidence quotes appear verbatim in the cited records, diagnosis names appear in the cited records); clinical disclaimer present; the summary was stored and a later `GET` returned it unchanged.
+- A second `POST /patients/{id}/summary` returned `cache_hit: true` and made no second provider call (call counter stayed at 1).
+- A live summary for a second synthetic patient was then indexed (`POST /patients/{id}/index`) and displayed in the React UI (checked in real Chrome): the result card carries the AI-generated badge, and the detail drawer shows the AI-generated banner, source quotes, source record ids, model id and the clinical disclaimer. The UI itself never calls OpenAI.
+- **What this does not show:** no clinician reviewed the output, and grounding checks do not establish clinical correctness. One request does not establish model reliability. Synthetic data only. Authentication and authorization are not implemented.
+- Reproduce (billable, needs your own funded key in `backend/.env`; the normal tests never call OpenAI): ingest the fixture, `POST /patients/{id}/fhir`, then `POST /patients/{id}/summary` once.
 
 ## Limitations and future work
 
@@ -367,14 +377,18 @@ Strategy and coverage map: [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md).
   under a distorted or misleading paraphrase (`text`, `summary_text`); omissions are not detected.
 - **English-only heuristics.** Hedging/history/negation/advice detection uses English marker lists with known coverage gaps
   (missed phrasings, occasional over-rejection).
-- **Live behavior unverified.** The live OpenAI API has not been tested; real model output quality and rejection rates are unknown.
-  The local-stub run is not a live integration test.
+- **Live OpenAI verification is one successful request only.** It establishes that the integration works once, not general model reliability, output quality or rejection rates. An earlier live attempt had failed at
+  the provider (exact status not captured; a billing/quota 429 is the likely cause); afterwards `insufficient_quota` was made a permanent, non-retried error (D43). Details in "Live OpenAI verification" below.
+- **Clinical correctness has not been independently validated.** Automated grounding checks establish textual traceability (cited ids exist, quotes appear verbatim in the cited records), **not** clinical correctness. No clinician has reviewed any generated summary, including the live one.
 - The quality indicator is an evidence-coverage heuristic, not a probability or calibrated model confidence.
-- AI summaries, other: never run against the live OpenAI API; automated checks reduce but do not eliminate unsupported output;
+- AI summaries, other: run against the live OpenAI API once only (see above); automated checks reduce but do not eliminate unsupported output;
   prose in `summary_text` is only partly verifiable; retrieval is recency-based, not semantic; requires human clinical review
   before any use; sending real clinical text to a provider needs appropriate agreements (this project uses synthetic data only).
 - FHIR: not a complete FHIR validator (no FHIRPath invariants or terminology); no coded content (the source has none);
   names are free text; bundles use `urn:uuid` references; generation is on demand per patient.
+- **Deviations from the original brief (deliberate, documented):** (1) the vector index is a SQLite store behind a `VectorStore` port, not ChromaDB (D32); (2) `GET /patients` and `GET /patients/{id}` were not
+  implemented: the owner ruled out a listing endpoint, and the UI uses `GET /patients/{id}/display` instead; (3) the search request field is `limit` (max 5), not `top_k`; (4) FHIR generation, summaries and indexing
+  are explicit per-patient calls, not automatic after ingestion; (5) normalized records are stored as canonical JSON on `source_records`, not in a separate table.
 - No resolution workflow for `needs_review` records; no listing/read endpoints for patients, records or the audit log (FHIR endpoints exist).
 - A changed source record is stored as a new record (no supersede logic); existing patient demographics are never updated.
 - Identical raw records repeated inside one file are reported as already ingested.

@@ -58,7 +58,7 @@ Frontend: `cd frontend && npm test` (Vitest). Lint: `ruff check backend`.
 - **Real-browser smoke test (manual, not part of `pytest`/`npm test`, not committed):** a throwaway Playwright script driving the locally installed Chrome (`playwright-core` installed outside the repo; no
   new project dependency) against a real backend (lexical embedder, local OpenAI HTTP stub for the summary, synthetic `records_for_summary.json`) and the Vite dev server. 23 checks passed:
   ingest->FHIR->summary->index->search, 3 result cards, name/MRN lookup (one call), document and AI-summary drawers, focused FHIR links open a single resource, Escape/focus restore,
-  type/date/patient filters, no horizontal overflow at 768 px and 375 px, no unexpected console errors. It is a one-off check on one machine (macOS, Chrome), not a CI test.
+  type/date/patient filters, no horizontal overflow at 768 px and 375 px, no unexpected console errors. A second throwaway run (9 checks) confirmed a live OpenAI summary renders in the UI: card badge, drawer banner, quotes, source ids, model id and disclaimer, with no `POST /summary` from the UI. It is a one-off check on one machine (macOS, Chrome), not a CI test.
 - Not covered: no automated visual/regression or accessibility (axe) scan; other browsers untested; contrast not measured; keyboard behaviour verified only for Escape/focus restore.
 
 ### OpenAI error classification (`tests/integration/test_openai_error_classification.py`, 27 tests)
@@ -66,9 +66,8 @@ Real `openai` SDK over a mocked HTTP transport, driven through the real use case
 401/403/404/400 = permanent, 500/503/connection/timeout/malformed 200 body = transient. Asserts permanent failures make exactly 1 provider attempt with no backoff sleep; transient failures make exactly `max_attempts`
 with backoff `[1, 2]`; a transient-then-success path still succeeds; no provider text, key or request id appears in exceptions, logs or the API response. Mutation-checked (disabling the quota check fails 6 tests).
 
-## Planned (not yet written; tracked per phase)
-Embeddings/indexing/search filters/patient isolation/empty
-results/benchmark (Phase 5); UI flows (Phase 6).
+## Not covered
+No CI pipeline; no automated live OpenAI test (one manual live request was verified; see README "Live OpenAI verification"); no automated browser/visual/accessibility tests; no load testing beyond the Phase 5 benchmark script.
 
 ## AI evaluation
 Implemented: deterministic checks on synthetic cases (unsupported claims, dates, patient identity, attribution, length,
@@ -90,4 +89,4 @@ leaky-store test was added. `backend/scripts/benchmark_search.py` is the repeata
 ## Notes on AI tests
 No test needs a network or an API key: providers are scripted fakes (`tests/summary_helpers.py::ScriptedLLM`), and the OpenAI
 adapter is tested with the real SDK over `httpx.MockTransport`. Mutation checks: disabling grounding verification, the
-cache lookup and the patient-isolation check each made the relevant tests fail. Live-API behavior is untested.
+cache lookup and the patient-isolation check each made the relevant tests fail. The automated suite never calls the live API; one manual, billable live request was verified separately (README).

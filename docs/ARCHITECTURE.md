@@ -18,7 +18,7 @@ use cases receive those implementations by constructor injection; only the compo
 |---|---|---|---|
 | Domain | `app/domain/` | Entities, canonical models, normalization/identity rules, ports | stdlib, pydantic |
 | Application | `app/application/` | Use cases, ingestion strategies + factory, DTOs, pipelines | domain |
-| Infrastructure | `app/infrastructure/` | SQLite repositories, OpenAI, Sentence Transformers, ChromaDB, fhir.resources adapters | domain, application, libraries |
+| Infrastructure | `app/infrastructure/` | SQLite repositories and vector store, OpenAI, Sentence Transformers, fhir.resources adapters | domain, application, libraries |
 | Presentation | `app/api/` | FastAPI routes, request/response schemas, DI providers | application, domain |
 | Cross-cutting | `app/core/` | Settings, JSON logging + redaction, error envelope, request-ID middleware | stdlib, fastapi |
 
@@ -26,13 +26,13 @@ use cases receive those implementations by constructor injection; only the compo
 ChromaDB, OpenAI, Sentence Transformers, fhir, httpx, or any outer layer, or if `application`
 imports infrastructure/api. Pydantic is allowed in the domain (validation, not I/O).
 
-## What exists today (Phases 1-5)
+## What exists today (Phases 1-6)
 
 [built] app factory, settings, logging/redaction, error envelope, request IDs, `GET /health`, React shell
 (Phase 1); canonical model, normalization, identity policy, JSON/CSV/text ingestion, duplicate
 detection, audit log, SQLite persistence, `POST /ingest` (Phase 2); FHIR R4 mapping, validation, persistence and
 endpoints (Phase 3); grounded AI summaries with an OpenAI adapter, caching and validation (Phase 4). Semantic search over FHIR documents and
-summaries (Phase 5).
+summaries (Phase 5); clinician search UI with a patient display lookup and a focused FHIR resource endpoint (Phase 6).
 
 | Path | Contents (Phase 2) |
 |---|---|
@@ -199,18 +199,18 @@ explicit step (`POST /patients/{id}/fhir`), not triggered by ingestion.
 - Edited content for the same source is a *new* record; there is no supersede/update logic.
 - Existing patient demographics are never updated or back-filled from later records.
 - Identical raw records repeated inside one file are treated as already-ingested.
-- No `GET` endpoints for patients, records or the audit log yet (inspect via the database); FHIR endpoints exist.
+- No patient listing, `GET /patients/{id}`, record or audit-log endpoints (inspect via the database). Patient name/MRN are available only through `GET /patients/{id}/display` (Phase 6).
 - Schema creation only (`create_all`); schema changes need a migration tool later.
 - Upload size is limited by setting; there is no authentication.
 
-## Patterns (planned unless noted)
+## Patterns (all built)
 
 | Pattern | Problem it solves | Where | Phase |
 |---|---|---|---|
 | Repository | Keep SQL out of use cases; swap in fakes for tests | ports in `domain/ports`, impls in `infrastructure/persistence` | 2-4 |
 | Strategy | Three input formats, one canonical output | `application/ingestion/` (JSON, CSV, Text) | 2 |
 | Factory | Select the strategy from input type | `IngestionStrategyFactory` (only real factory planned) | 2 |
-| Adapter | Isolate OpenAI, Sentence Transformers, ChromaDB, fhir.resources | `infrastructure/{llm,embeddings,vectorstore,fhir}` | 3-5 |
+| Adapter | Isolate OpenAI, Sentence Transformers (and the lexical hashing embedder), the SQLite vector store, fhir.resources | `infrastructure/{llm,search,fhir}` | 3-5 |
 | Dependency Injection | Explicit, replaceable dependencies | constructor injection in use cases; FastAPI `Depends` at the boundary (**[built]** for settings/engine via `app.state`) | all |
 | Use case | One workflow per class, thin routes | `application/use_cases/` | 2-5 |
 
@@ -218,14 +218,14 @@ Deliberately **not** used: a Strategy per trivial conditional (date/gender norma
 plain functions and become strategies only if source-specific rules appear), factories wrapping a
 single constructor, global singletons.
 
-## Data flow (target)
+## Data flow
 
 Ingest: file -> `IngestionStrategyFactory` -> strategy -> canonical record -> normalization ->
 duplicate/identity checks (deterministic) -> persist source + normalized + audit (SQLite) ->
-FHIR mapping + validation -> persist FHIR -> index (embed -> ChromaDB) -> mark complete.
-Failures at any step keep the SQLite record, store the failure status, and are retryable.
+FHIR mapping + validation -> persist FHIR. Each later stage is an explicit, idempotent, per-patient call (`POST /patients/{id}/fhir`, `/summary`, `/index`): ingestion does not trigger FHIR generation,
+summaries or indexing automatically. Failures keep the SQLite record, store the failure status, and are retryable.
 
-## AI pipeline: Grounded RAG clinical intelligence (planned, Phase 4)
+## AI pipeline: Grounded RAG clinical intelligence (built, Phase 4; verified once against the live OpenAI API)
 
 Records -> selection/preprocessing -> patient-scoped retrieval -> scope/metadata validation ->
 context assembly -> `LLMProvider.generate` -> structured output validation (Pydantic, <=200 words) ->
@@ -236,7 +236,7 @@ summary says so. The quality indicator is an uncalibrated heuristic, not a clini
 Evaluation: deterministic checks on synthetic cases (unsupported claims, dates, patient identity,
 attribution, length, schema) plus a documented human-review rubric. RAG reduces, not eliminates, hallucination.
 
-## Search architecture (planned, Phase 5)
+## Search architecture (built, Phase 5; see also the section above)
 
 Query -> validation -> `EmbeddingProvider` -> patient/metadata filter -> `VectorStore` query ->
 optional keyword/metadata rerank -> format -> response. Patient scope is applied inside the vector
@@ -245,7 +245,7 @@ query filter, not after retrieval. Scores are similarity, not clinical relevance
 ## Persistence
 
 SQLite is the source of truth (patients, source records, normalized records, FHIR resources, audit,
-summaries, embedding metadata, status). ChromaDB is a derived index rebuildable from SQLite.
+summaries, status). The vector index (`search_index_entries`, also in SQLite) is derived and rebuildable from the stored FHIR resources and summaries (`POST /search/reindex`). ChromaDB was not used (D32).
 
 ## Deterministic by design
 
@@ -256,8 +256,7 @@ or fills FHIR data.
 ## Error handling
 
 One envelope `{"error": {code, message, request_id, details?}}` **[built]**; internal text never
-returned. Planned distinct error types: validation, domain, not-found, identity conflict, provider
-failure, persistence, indexing. Retries only for transient provider errors.
+returned. Domain errors map to stable codes (validation, not-found, FHIR/summary/search unavailable, provider failure categories). Retries only for transient provider errors; quota exhaustion is permanent (D43).
 
 ## Frontend
 
@@ -275,14 +274,14 @@ Vite dev server proxies `/api/*` to the backend. **[built, Phase 6]** clinician 
 - No coded content: DocumentReference has no `type`/`category`, DiagnosticReport is uncoded with status `unknown`
   (the source provides none of these). Clinical coding would need a terminology source and a human/clinical decision.
 - Patient names are free text (`name.text`), not split into given/family.
-- Bundles use `urn:uuid` full URLs (no FHIR server base URL); resources are not served individually
-  (`FhirRepository.get_resource` exists for Phase 5).
+- Bundles use `urn:uuid` full URLs (no FHIR server base URL); individual DocumentReference/DiagnosticReport resources are served by
+  `GET /patients/{id}/fhir/resources/{type}/{rid}` (Phase 6); the Patient resource only inside the Bundle.
 - Generation is per patient and on demand; there is no bulk or automatic regeneration.
 - Stale-but-previously-valid resources are retained (not served) after an `invalid`/`failed` regeneration.
 
 ## Known limitations (Phase 4)
-- **Not exercised against the live OpenAI API.** The adapter is verified against the real SDK over a mocked HTTP
-  transport; real model output quality, JSON-mode behavior and rejection rate are unknown.
+- **Live OpenAI verified for one request only.** The adapter is otherwise verified against the real SDK over a mocked HTTP
+  transport. One real request passed schema, grounding, length, disclaimer, persistence and caching checks; real-world output quality, reliability and rejection rate over many inputs remain unknown.
 - Automated checks do not prove clinical correctness: evidence quotes establish textual traceability only, a correctly cited quote can
   still support a distorted paraphrase, and omissions are undetected. Summaries are AI-generated, need qualified clinical review, and
   must not be presented as verified diagnoses or medical advice.

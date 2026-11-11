@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>EHR Media Intelligence Platform: technical write-up</title>
+<style>
+@page { size: A4; margin: 9mm 12mm; }
+body { font: 8pt/1.24 -apple-system, "Helvetica Neue", Arial, sans-serif; color: #111; margin: 0; }
+h1 { font-size: 14pt; margin: 0 0 1mm; } h2 { font-size: 9.6pt; margin: 2.6mm 0 0.8mm; border-bottom: 0.6pt solid #888; padding-bottom: 0.4mm; }
+p, ul { margin: 0.6mm 0; } ul { padding-left: 4.2mm; } li { margin: 0.2mm 0; }
+.sub { color: #444; font-size: 8pt; } table { border-collapse: collapse; width: 100%; margin: 0.8mm 0; font-size: 8pt; }
+td, th { border: 0.5pt solid #999; padding: 0.7mm 1.5mm; text-align: left; vertical-align: top; } th { background: #eee; }
+.warn { border: 0.8pt solid #a15c00; background: #fff6e5; padding: 1.2mm 2mm; margin: 1.2mm 0; }
+</style></head><body>
+<h1>EHR Media Intelligence Platform: technical write-up</h1>
+<p class="sub">Local assessment demo. Synthetic data only. Commit history on <code>main</code>: one commit per major task (foundation + ingestion, FHIR R4, AI summaries, semantic search, clinician UI) plus a quota-error fix.</p>
+<div class="warn"><b>Read first.</b> (1) <b>Live OpenAI verification is a single successful request</b> (synthetic fixture, one attempt, HTTP 200, 975 tokens): it shows the integration works once, not model reliability. (2) <b>Clinical correctness has not been independently validated</b>: no clinician has reviewed any output, and grounding checks show textual traceability only. (3) <b>Authentication and authorization are not implemented.</b> (4) <b>Synthetic-data demo only</b>: do not use with real patient data; not HIPAA-assessed.</div>
+
+<h2>What it does</h2>
+<p>Ingests JSON/CSV/text records; normalizes dates, gender and MRN; detects duplicates and identity conflicts; maps each resolved patient to FHIR R4 (Patient, DocumentReference, DiagnosticReport, Bundle); produces grounded AI summaries (OpenAI behind an interface); supports semantic search; and serves a React clinician search UI.</p>
+
+<h2>Architecture</h2>
+<p>Clean Architecture in a modular monolith (FastAPI): <code>domain</code> (rules, ports) &larr; <code>application</code> (use cases) &larr; <code>infrastructure</code> (SQLAlchemy/SQLite, OpenAI, sentence-transformers, fhir.resources) and <code>api</code> (thin routes). An import-direction test enforces the layering, and that <code>fhir.resources</code> and <code>openai</code> stay inside <code>infrastructure</code>. SQLite is the source of truth; the vector index is derived and rebuildable. Patterns: Repository/Unit of Work, Strategy (3 ingestion formats, 2 embedders), one Factory, Adapters, DI.</p>
+
+<h2>Key decisions (all in <code>docs/DECISIONS.md</code>, D1&ndash;D43)</h2>
+<ul>
+<li><b>Conservative identity:</b> never merge on name similarity; same MRN + different DOB = conflict; same name+DOB under a new MRN = ambiguous &rarr; held for review, with rationale and audit entry.</li>
+<li><b>FHIR R4 concepts:</b> per patient a <i>collection</i> Bundle of Patient, DocumentReference (note text as a base64 attachment; <code>context.period</code> = clinical date, <code>date</code> = ingestion time) and DiagnosticReport, linked by <code>urn:uuid</code> references with deterministic ids. Uses <code>fhir.resources.R4B</code> (FHIR 4.3.0, a technical correction of R4 whose elements for these resources were checked as identical to 4.0.1); the package default namespace is R5 and is never used. The library does not enforce value sets or reference resolution, so validation has three layers (library, value-set checks, reference/attachment checks). FHIR state is separate from ingestion status; generation is idempotent by fingerprint. Not a complete FHIR validator.</li>
+<li><b>Grounded summaries:</b> the model sees only one patient's clinical text (no name, MRN, DOB, id); every statement needs a verbatim evidence quote and source record ids; deterministic checks cover cited ids, quotes, diagnosis-in-quote, hedging/history/negation, dates/numbers, advice, &le;200 words. Cache key: patient + content hash + prompt version + model. A quote proves traceability, not correctness.</li>
+<li><b>AI summary evaluation:</b> 18 deterministic tests on synthetic cases (unsupported claims, dates, identity, attribution, length, schema) plus a human-review rubric that has <b>not</b> been performed; English-only heuristics; the quality indicator is a coverage heuristic. Live result: one request passed all automated checks; no clinician review.</li>
+<li><b>Search:</b> SQLite vector store (exact cosine, filters applied before ranking, every hit re-validated) instead of ChromaDB; default <code>all-MiniLM-L6-v2</code>; the lexical embedder is an explicit fallback and there is never a silent substitute (unavailable semantic &rarr; <code>503</code>). Results carry no names/MRNs; the UI fetches them from a separate <code>GET /patients/{id}/display</code>, and detail views use a focused, ownership-checked FHIR resource endpoint rather than the whole Bundle.</li>
+<li><b>Trade-offs:</b> SQLite exact-scan vectors over ChromaDB (no extra service, rebuildable, but linear: 130 ms at 20,000 entries, unmeasured beyond); semantic default with an honest lexical fallback (a 1 GB install and 503 until set up, in exchange for never silently degrading); explicit per-patient FHIR/summary/index steps (simple, idempotent, retryable, but not automatic); no authentication, to keep the demo scope honest rather than add a cosmetic mechanism.</li>
+<li><b>Error handling:</b> provider/SDK text is never propagated or logged; HTTP 429 <code>insufficient_quota</code> is permanent (one attempt), rate limits/5xx/network errors use bounded retry.</li>
+</ul>
+
+<h2>Verification actually performed</h2>
+<table><tr><th>Check</th><th>Result</th></tr>
+<tr><td>Backend <code>pytest</code> / <code>ruff</code></td><td>503 passed, 1 opt-in skipped (real-model test); lint clean. Also passes from a clean <code>git archive</code> copy on Python 3.14 (base <code>[dev]</code> install); run in the working tree on Python 3.12.</td></tr>
+<tr><td>Frontend</td><td>24 tests (mocked API) passed; production build OK; <code>npm ci</code> clean copy OK.</td></tr>
+<tr><td>Live OpenAI (one request)</td><td>Real API, <code>gpt-4o-mini-2024-07-18</code>, HTTP 200, exactly 1 provider attempt, 975 total tokens. Passed schema, 46 words (&le;200), grounding (cited ids exist, quotes verbatim in cited records), disclaimer, persistence. Second POST = cache hit, no second provider call. A live summary was then indexed and shown in the React UI (badge, banner, quotes, disclaimer). An earlier attempt had failed (likely quota) before the quota fix.</td></tr>
+<tr><td>Real-browser smoke (Chrome, macOS, one run)</td><td>23/23 checks: ingest &rarr; FHIR &rarr; summary (<i>local stub, not OpenAI; the live call was a separate test</i>) &rarr; index &rarr; search, cards, name/MRN lookup, both drawers, filters, no overflow at 768/375 px.</td></tr>
+<tr><td>Search benchmark (synthetic, 1 run)</td><td>Semantic: cold start 3.7 s (model on disk; ~50 s first ever), index 50 records 0.38 s, warm search p50/p95 8.0/8.8 ms; lexical 3.1/4.0 ms. 20 author-written queries: top-1 1.00 / precision@5 0.89 (semantic) vs 0.75 / 0.45 (lexical).</td></tr>
+<tr><td>Hygiene</td><td>Mutation checks on safety properties; secret/private-file scan of tracked files and full history: only fake fixtures.</td></tr></table>
+
+<h2>Limitations and deviations</h2>
+<ul>
+<li><b>Not verified:</b> model reliability or output quality beyond one live request; clinician review of any summary; Windows setup commands; other browsers; automated accessibility/visual tests; contrast.</li>
+<li><b>Security:</b> no authn/authz; any caller can read all data; the full-Bundle FHIR endpoint returns whole Patient resources; patient filtering is data scoping, not access control.</li>
+<li><b>Deviations from the brief:</b> SQLite vector store instead of ChromaDB; no <code>GET /patients</code> or <code>GET /patients/{id}</code> (display lookup instead); search field is <code>limit</code> (max 5), not <code>top_k</code>; FHIR/summary/index are explicit per-patient calls, not automatic after ingestion.</li>
+<li><b>Other:</b> English-only heuristics; quality indicator is a coverage heuristic, not a confidence; no <code>needs_review</code> workflow; no migrations; no CI.</li>
+</ul>
+</body></html>

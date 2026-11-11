@@ -36,7 +36,7 @@
   source record IDs, <=200 words), deterministic grounding checks, deterministic recent records / missing information /
   quality indicator, cache keyed by patient + context hash + prompt version + model with staleness reporting,
   retries/backoff, recorded retryable failures, audit events; `docs/API_CONTRACTS.md`, `docs/AI_EVALUATION.md`.
-  Verified with scripted fakes and the real OpenAI SDK over a mocked transport; not exercised against the live API.
+  Verified with scripted fakes and the real OpenAI SDK over a mocked transport, and once against the live OpenAI API (one request, `gpt-4o-mini-2024-07-18`: schema, 200-word limit, grounding, disclaimer, persistence and cache hit passed; the summary was then indexed and displayed in the UI). One request does not establish model reliability or clinical correctness.
 - Semantic search (default: real all-MiniLM-L6-v2 embeddings; see the review adjustments below): `POST /search` (top <= 5, patient/resource-type/date filters applied before ranking, snippets, FHIR links, similarity scores),
   `POST /patients/{id}/index`, `POST /search/reindex`, `GET /search/status`. SQLite-backed vector store (exact cosine, numpy) behind a `VectorStore`
   port; `EmbeddingProvider` port with a deterministic lexical `hashing` default and an optional `sentence-transformers` (`all-MiniLM-L6-v2`) provider;

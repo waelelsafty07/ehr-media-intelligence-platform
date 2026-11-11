@@ -46,7 +46,7 @@ Generates a grounded summary (or returns the cached one). Requires `EHR_OPENAI_A
 **Safety notes.** The summary is AI-generated and requires qualified clinical review; it is not a verified diagnosis and not
 medical advice. `evidence_quote`/`source_record_ids` give textual traceability, not clinical correctness (a real quote can
 support a distorted paraphrase). The quality indicator is an evidence-coverage heuristic, not a probability or calibrated
-confidence. Grounding heuristics are English-only. Live OpenAI behavior is unverified.
+confidence. Grounding heuristics are English-only. Live OpenAI behavior has been verified for one request only (see the README); it is not clinically validated.
 
 `certainty`: `stated` | `uncertain`. `temporal`: `current` | `historical` | `unspecified`.
 `recent_records`, `missing_information`, `source_record_ids` and the quality indicator are computed deterministically,

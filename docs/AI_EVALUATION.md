@@ -1,8 +1,8 @@
 # AI evaluation: clinical summaries
 
 **What this is and is not.** Automated checks reduce the risk of unsupported output. They do **not** establish
-clinical correctness, safety or fitness for care. Nothing here has been validated with clinicians, and the live
-OpenAI integration has **not** been exercised (no credentials were used; see "Verification status").
+clinical correctness, safety or fitness for care. Nothing here has been validated with clinicians. The live
+OpenAI integration has been exercised **once** (see "Verification status"); that shows the integration works, not that outputs are reliable or clinically correct.
 
 **Safety position.** A generated summary is AI output that requires review by a qualified clinician. It must not be
 presented as a verified diagnosis or as medical advice. Evidence quotes establish textual traceability (the words exist in
@@ -56,6 +56,9 @@ Record reviewer, date, model, prompt version and cases reviewed. A failure on 2,
 ## Verification status
 - Verified: prompts/validation/caching/retries/persistence with scripted fake providers; the OpenAI adapter against the
   real `openai` SDK over a mocked HTTP transport (request shape, parsing, error classification).
-- **Not verified:** behavior against the live OpenAI API (model availability, JSON-mode behavior, real output quality,
-  rejection rate of real outputs by the checks, latency). A human-reviewed pass over real outputs on synthetic
-  records is the recommended next step.
+- **Verified live, once:** one controlled request to the real OpenAI API (synthetic fixture, isolated database, one attempt, no retries): HTTP 200, model
+  `gpt-4o-mini-2024-07-18`, 975 total tokens; the output passed schema validation, the 200-word limit (46 words), the grounding checks (cited ids exist, evidence quotes verbatim in the cited records,
+  diagnosis names present in the cited records) and carried the disclaimer; it was persisted, and a second request was served from the cache with no second provider call. A second live summary
+  (another synthetic patient) was later generated, indexed and displayed in the React UI with its AI-generated banner, source quotes and disclaimer.
+- **Not verified:** model reliability across many inputs, the rejection rate of real outputs by the checks, latency, behavior of other models, and clinical correctness. No clinician has reviewed any
+  generated summary. A human-reviewed pass over a larger set of synthetic records is the recommended next step.

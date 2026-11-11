@@ -236,7 +236,7 @@ Status for each: **Accepted**. "Implemented" notes say what the code actually re
   **Implemented:** yes.
 
 ## D31. Chat Completions JSON mode, not provider-side structured-output schemas
-- **Context:** the live API cannot be exercised here. **Decision:** request `json_object` mode and enforce the schema
+- **Context:** at design time the live API could not be exercised (it was later verified for one request; the `json_object` approach worked). **Decision:** request `json_object` mode and enforce the schema
   ourselves with Pydantic. **Alternatives:** `json_schema` strict mode (unverifiable without live access, and stricter
   schema subset), Responses API. **Reasoning:** provider-agnostic validation we fully control and test. **Tradeoffs:**
   relies on the model following the described format; the pipeline re-asks on violations. **Implemented:** yes.
