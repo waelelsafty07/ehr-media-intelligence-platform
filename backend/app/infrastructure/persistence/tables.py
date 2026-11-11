@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Date, DateTime, ForeignKey, Index, Integer, String
+from sqlalchemy import JSON, Date, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -86,3 +86,22 @@ class PatientFhirStateRow(Base):
     issues: Mapped[list[dict[str, Any]]] = mapped_column(JSON)
     failure_category: Mapped[str | None] = mapped_column(String(100))
     updated_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class ClinicalSummaryRow(Base):
+    """One summary per cache key; a failed row is replaced when a retry succeeds."""
+
+    __tablename__ = "clinical_summaries"
+    summary_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.patient_id"), index=True)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    prompt_version: Mapped[str] = mapped_column(String(64))
+    model_identifier: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(16))
+    summary: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    failure_category: Mapped[str | None] = mapped_column(String(64))
+    attempts: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    __table_args__ = (UniqueConstraint("patient_id", "content_hash", "prompt_version", "model_identifier",
+                                       name="uq_summary_cache_key"),)

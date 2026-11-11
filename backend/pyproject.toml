@@ -7,8 +7,7 @@ name = "ehr-media-intelligence"
 version = "0.1.0"
 description = "EHR Media Intelligence Platform - backend (synthetic data only)"
 requires-python = ">=3.11"
-# Runtime dependencies actually used today. Later phases add their own (openai,
-# sentence-transformers, chromadb) when the code that uses them lands. Lower bounds = tested versions.
+# Runtime dependencies actually used today. Later phases add their own (sentence-transformers, chromadb) when the code that uses them lands. Lower bounds = tested versions.
 dependencies = [
   "fastapi>=0.162",
   "uvicorn[standard]>=0.30",
@@ -17,6 +16,7 @@ dependencies = [
   "sqlalchemy>=2.1",
   "python-multipart>=0.0.9",  # required by FastAPI for file uploads / form fields
   "fhir.resources>=8.3",  # FHIR R4 models; ONLY the fhir.resources.R4B namespace is used (see docs/FHIR_MAPPING.md)
+  "openai>=3.49",  # LLM provider SDK; used only in infrastructure/llm (OpenAIAdapter)
 ]
 
 [project.optional-dependencies]

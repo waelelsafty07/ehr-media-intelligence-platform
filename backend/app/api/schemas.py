@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from app.application.dto import IngestResult
 from app.domain.canonical import IssueCode, ProcessingStatus, Severity, SourceFormat
+from app.domain.summary import ClinicalSummary
 
 
 class IssueSchema(BaseModel):
@@ -72,3 +73,13 @@ class FhirStatusResponse(BaseModel):
         return cls(patient_id=r.patient_id, status=r.status.value, unchanged=r.unchanged, bundle_id=r.bundle_id,
                    resource_counts=r.resource_counts, updated_at=r.updated_at,
                    issues=[FhirIssueSchema(code=i.code, path=i.path, message=i.message) for i in r.issues])
+
+
+class SummaryResponse(BaseModel):
+    """A validated clinical summary plus cache/staleness metadata. Not medical advice."""
+
+    summary: ClinicalSummary
+    summary_id: str
+    cache_hit: bool = False
+    is_stale: bool = False
+    stale_reasons: list[str] = []

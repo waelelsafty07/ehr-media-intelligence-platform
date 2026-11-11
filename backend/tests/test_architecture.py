@@ -59,3 +59,12 @@ def test_fhir_library_is_confined_to_infrastructure_and_only_the_r4b_namespace()
                 elif not imp.startswith("fhir.resources.R4B"):
                     offenders.append(f"{rel} imports non-R4B namespace {imp}")
     assert offenders == []
+
+
+def test_openai_sdk_is_confined_to_infrastructure_llm():
+    offenders = []
+    for file in APP.rglob("*.py"):
+        for imp in _imports(file):
+            if (imp == "openai" or imp.startswith("openai.")) and file.relative_to(APP).parts[:2] != ("infrastructure", "llm"):
+                offenders.append(f"{file.relative_to(APP)} imports {imp}")
+    assert offenders == []

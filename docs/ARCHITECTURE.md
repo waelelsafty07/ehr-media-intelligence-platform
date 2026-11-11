@@ -26,12 +26,13 @@ use cases receive those implementations by constructor injection; only the compo
 ChromaDB, OpenAI, Sentence Transformers, fhir, httpx, or any outer layer, or if `application`
 imports infrastructure/api. Pydantic is allowed in the domain (validation, not I/O).
 
-## What exists today (Phases 1-3)
+## What exists today (Phases 1-4)
 
 [built] app factory, settings, logging/redaction, error envelope, request IDs, `GET /health`, React shell
 (Phase 1); canonical model, normalization, identity policy, JSON/CSV/text ingestion, duplicate
 detection, audit log, SQLite persistence, `POST /ingest` (Phase 2); FHIR R4 mapping, validation, persistence and
-endpoints (Phase 3). AI, embeddings and search are **[planned]**.
+endpoints (Phase 3); grounded AI summaries with an OpenAI adapter, caching and validation (Phase 4). Embeddings and
+search are **[planned]**.
 
 | Path | Contents (Phase 2) |
 |---|---|
@@ -48,7 +49,10 @@ endpoints (Phase 3). AI, embeddings and search are **[planned]**.
 | `application/use_cases/` (FHIR) | `GenerateFHIRBundleUseCase`, `GetPatientFHIRBundleUseCase`, `GetPatientFHIRStatusUseCase` |
 | `infrastructure/fhir/` | `R4BBundleBuilder`, `R4BSchemaValidator`: the only code importing `fhir.resources` (R4B namespace) |
 | `infrastructure/persistence/` (FHIR) | `fhir_resources`, `patient_fhir_state` tables + `SqlAlchemyFhirRepository` |
-| `api/` | `fhir.py` (3 thin routes), `ingest.py` (thin route), `schemas.py`, `dependencies.py` (composition root), `domain_errors.py` |
+| `domain/summary.py`, `domain/ports/llm.py` | Summary schemas, context building, grounding checks; `LLMProvider` port |
+| `application/summary/`, `application/use_cases/` (summary) | Versioned prompt; `GenerateClinicalSummaryUseCase`, `GetPatientSummaryUseCase` |
+| `infrastructure/llm/` | `OpenAIAdapter` (only code importing `openai`), `UnconfiguredLLMProvider`, `build_llm_provider` |
+| `api/` | `summaries.py` (2 thin routes), `fhir.py` (3 thin routes), `ingest.py` (thin route), `schemas.py`, `dependencies.py` (composition root), `domain_errors.py` |
 
 ## Ingestion design (built)
 
@@ -99,6 +103,33 @@ Details hold codes, IDs and counts only: a test asserts no names, dates, MRNs or
 (unique `source_hash`; indexed `content_hash`, `status`; FKs to `patients` and self for duplicates; JSON
 `raw_payload` and `canonical`), `audit_events` (FKs; indexed by record, type, time). Foreign keys are
 enforced (PRAGMA). Tables are created with `create_all`; no migration tool yet.
+
+## AI summary pipeline (built, Phase 4)
+
+Grounded RAG, as decided in D12. Modules: `domain/summary.py` (schemas, context building, parsing, grounding checks,
+deterministic parts), `domain/ports/llm.py` (`LLMProvider`), `application/summary/prompt.py` (versioned prompt),
+`application/use_cases/generate_clinical_summary.py` + `get_patient_summary.py`, `infrastructure/llm/` (`OpenAIAdapter`,
+`UnconfiguredLLMProvider`, `build_llm_provider`), table `clinical_summaries`, routes in `api/summaries.py`.
+
+```
+patient's completed records (SQLite) -> context (isolation re-checked, newest first, record/char caps)
+ -> cache lookup (patient, hash of the exact context, prompt version, model)  -> hit: return stored summary
+ -> LLMProvider.generate (no DB transaction held; retries/backoff) -> safe parse + strict schema
+ -> grounding checks (cited ids in context, verbatim quotes, diagnosis-in-quote, hedging/history/negation,
+    dates+numbers, advice, <=200 words) -> assemble with deterministic parts -> persist + audit
+```
+- **Retrieval** is deterministic and patient-scoped (SQLite), not semantic: Phase 4 predates the vector index. Semantic
+  ranking within the same patient scope can be added in Phase 5 behind the same context builder.
+- **What the model sees:** only clinical text and stated diagnoses of that patient. Never name, MRN, DOB or the patient ID.
+- **Deterministic, not model-written:** `recent_records`, `missing_information`, `source_record_ids`, the quality
+  indicator (an evidence-coverage heuristic, not a confidence), disclaimer, metadata.
+- **States:** `clinical_summaries.status` is `generated` or `failed` per cache key. Failed rows are never cache hits;
+  calling POST again retries and replaces the row. `GET` reports staleness.
+- **Reliability:** provider errors are categorized (transient / timeout / permanent / not configured); transient errors
+  and invalid model output share one attempt budget (default 3) with exponential backoff for transient errors;
+  permanent errors stop at once; SDK error text is never propagated (it can echo credentials). The app starts without
+  an API key; generation then returns 503.
+- Evaluation and human-review rubric: [AI_EVALUATION.md](AI_EVALUATION.md). Endpoint contracts: [API_CONTRACTS.md](API_CONTRACTS.md).
 
 ## FHIR design (built, Phase 3)
 
@@ -190,3 +221,19 @@ Vite dev server proxies `/api/*` to the backend. **[built]** shell only; UI is P
   (`FhirRepository.get_resource` exists for Phase 5).
 - Generation is per patient and on demand; there is no bulk or automatic regeneration.
 - Stale-but-previously-valid resources are retained (not served) after an `invalid`/`failed` regeneration.
+
+## Known limitations (Phase 4)
+- **Not exercised against the live OpenAI API.** The adapter is verified against the real SDK over a mocked HTTP
+  transport; real model output quality, JSON-mode behavior and rejection rate are unknown.
+- Automated checks do not prove clinical correctness: evidence quotes establish textual traceability only, a correctly cited quote can
+  still support a distorted paraphrase, and omissions are undetected. Summaries are AI-generated, need qualified clinical review, and
+  must not be presented as verified diagnoses or medical advice.
+- `summary_text` prose is only partially verified (dates, numbers, advice phrases); structured fields are stronger.
+- Marker lists (hedging/history/negation/advice) are English heuristics and can miss or over-reject.
+- Retrieval is deterministic recency selection with caps, not semantic; very long histories are truncated (disclosed in
+  `missing_information`).
+- Concurrent identical requests may both call the provider (no in-flight de-duplication); the cache key prevents
+  duplicate rows.
+- Sending clinical text to a third-party provider requires appropriate agreements for real data; this project uses
+  synthetic data only and makes no compliance claim.
+- Records held for identity review (`needs_review`) are not linked to a patient and therefore not summarized.

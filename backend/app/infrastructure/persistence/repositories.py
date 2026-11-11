@@ -16,8 +16,10 @@ from app.domain.canonical import (
 )
 from app.domain.entities import AuditEvent, AuditEventType, Patient, StoredSourceRecord
 from app.domain.fhir import FhirIssue, FhirResourceRecord, FhirStatus, PatientFhirState
+from app.domain.summary import ClinicalSummary, StoredSummary, SummaryStatus
 from app.infrastructure.persistence.tables import (
     AuditEventRow,
+    ClinicalSummaryRow,
     FhirResourceRow,
     PatientFhirStateRow,
     PatientRow,
@@ -205,3 +207,51 @@ class SqlAlchemyFhirRepository:
     def get_resource(self, resource_type: str, resource_id: str) -> FhirResourceRecord | None:
         row = self._s.get(FhirResourceRow, (resource_type, resource_id))
         return self._resource(row) if row else None
+
+
+class SqlAlchemyClinicalSummaryRepository:
+    def __init__(self, session: Session) -> None:
+        self._s = session
+
+    @staticmethod
+    def _to_domain(r: ClinicalSummaryRow) -> StoredSummary:
+        return StoredSummary(
+            summary_id=r.summary_id, patient_id=r.patient_id, content_hash=r.content_hash,
+            prompt_version=r.prompt_version, model_identifier=r.model_identifier, status=SummaryStatus(r.status),
+            summary=ClinicalSummary.model_validate(r.summary) if r.summary else None,
+            failure_category=r.failure_category, attempts=r.attempts, created_at=_utc(r.created_at),
+            updated_at=_utc(r.updated_at))
+
+    def _by_key(self, patient_id: str, content_hash: str, prompt_version: str,
+                model_identifier: str) -> ClinicalSummaryRow | None:
+        return self._s.scalar(select(ClinicalSummaryRow).where(
+            ClinicalSummaryRow.patient_id == patient_id, ClinicalSummaryRow.content_hash == content_hash,
+            ClinicalSummaryRow.prompt_version == prompt_version,
+            ClinicalSummaryRow.model_identifier == model_identifier))
+
+    def get_by_key(self, patient_id: str, content_hash: str, prompt_version: str,
+                   model_identifier: str) -> StoredSummary | None:
+        row = self._by_key(patient_id, content_hash, prompt_version, model_identifier)
+        return self._to_domain(row) if row else None
+
+    def save(self, summary: StoredSummary) -> None:
+        row = self._by_key(summary.patient_id, summary.content_hash, summary.prompt_version,
+                           summary.model_identifier) or ClinicalSummaryRow(
+            summary_id=summary.summary_id, patient_id=summary.patient_id, content_hash=summary.content_hash,
+            prompt_version=summary.prompt_version, model_identifier=summary.model_identifier,
+            created_at=_naive(summary.created_at))
+        row.status = summary.status.value
+        row.summary = summary.summary.model_dump(mode="json") if summary.summary else None
+        row.failure_category = summary.failure_category
+        row.attempts = summary.attempts
+        row.updated_at = _naive(summary.updated_at)
+        self._s.add(row)
+        self._s.flush()
+
+    def get_latest_generated(self, patient_id: str) -> StoredSummary | None:
+        row = self._s.scalar(
+            select(ClinicalSummaryRow)
+            .where(ClinicalSummaryRow.patient_id == patient_id,
+                   ClinicalSummaryRow.status == SummaryStatus.GENERATED.value)
+            .order_by(ClinicalSummaryRow.updated_at.desc(), ClinicalSummaryRow.summary_id).limit(1))
+        return self._to_domain(row) if row else None

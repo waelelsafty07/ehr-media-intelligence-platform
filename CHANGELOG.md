@@ -24,3 +24,9 @@
   sets, reference integrity); persisted resources and a FHIR processing state separate from ingestion status;
   idempotent regeneration by fingerprint; endpoints `POST /patients/{id}/fhir`, `GET /patients/{id}/fhir`,
   `GET /patients/{id}/fhir/status`; sample `records_with_diagnoses.json`; `docs/FHIR_MAPPING.md`.
+- AI clinical summaries: `POST/GET /patients/{id}/summary`. Grounded RAG pipeline (patient-scoped context, no
+  identifiers sent to the model), `LLMProvider` port with `OpenAIAdapter`, strict structured output (evidence quotes +
+  source record IDs, <=200 words), deterministic grounding checks, deterministic recent records / missing information /
+  quality indicator, cache keyed by patient + context hash + prompt version + model with staleness reporting,
+  retries/backoff, recorded retryable failures, audit events; `docs/API_CONTRACTS.md`, `docs/AI_EVALUATION.md`.
+  Verified with scripted fakes and the real OpenAI SDK over a mocked transport; not exercised against the live API.

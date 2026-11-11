@@ -56,6 +56,9 @@ class AuditEventType(StrEnum):
     FHIR_UNCHANGED = "fhir_unchanged"
     FHIR_VALIDATION_FAILED = "fhir_validation_failed"
     FHIR_GENERATION_FAILED = "fhir_generation_failed"
+    SUMMARY_GENERATED = "summary_generated"
+    SUMMARY_CACHE_HIT = "summary_cache_hit"
+    SUMMARY_FAILED = "summary_failed"
 
 
 class AuditEvent(BaseModel):

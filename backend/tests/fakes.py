@@ -8,6 +8,7 @@ from datetime import date
 from app.domain.canonical import ProcessingStatus
 from app.domain.entities import AuditEvent, Patient, StoredSourceRecord
 from app.domain.fhir import FhirResourceRecord, PatientFhirState
+from app.domain.summary import StoredSummary, SummaryStatus
 
 
 class FakeStore:
@@ -17,6 +18,7 @@ class FakeStore:
         self.audit: list[AuditEvent] = []
         self.fhir_state: dict[str, PatientFhirState] = {}
         self.fhir_resources: dict[tuple[str, str], FhirResourceRecord] = {}
+        self.summaries: dict[tuple[str, str, str, str], StoredSummary] = {}
         self.fail_on: dict[str, int] = {}  # operation name -> remaining failures
 
     def maybe_fail(self, op: str) -> None:
@@ -25,10 +27,11 @@ class FakeStore:
             raise RuntimeError(f"injected failure in {op}")
 
     def snapshot(self):
-        return copy.deepcopy((self.patients, self.records, self.audit, self.fhir_state, self.fhir_resources))
+        return copy.deepcopy((self.patients, self.records, self.audit, self.fhir_state, self.fhir_resources,
+                             self.summaries))
 
     def restore(self, snap) -> None:
-        self.patients, self.records, self.audit, self.fhir_state, self.fhir_resources = snap
+        self.patients, self.records, self.audit, self.fhir_state, self.fhir_resources, self.summaries = snap
 
 
 class FakePatients:
@@ -91,6 +94,22 @@ class FakeFhir:
     def get_resource(self, resource_type, resource_id): return self.s.fhir_resources.get((resource_type, resource_id))
 
 
+class FakeSummaries:
+    def __init__(self, s: FakeStore): self.s = s
+    @staticmethod
+    def _key(patient_id, content_hash, prompt_version, model_identifier):
+        return (patient_id, content_hash, prompt_version, model_identifier)
+    def get_by_key(self, patient_id, content_hash, prompt_version, model_identifier):
+        return self.s.summaries.get(self._key(patient_id, content_hash, prompt_version, model_identifier))
+    def save(self, summary):
+        self.s.maybe_fail("summaries.save")
+        self.s.summaries[self._key(summary.patient_id, summary.content_hash, summary.prompt_version,
+                                   summary.model_identifier)] = summary
+    def get_latest_generated(self, patient_id):
+        c = [x for x in self.s.summaries.values() if x.patient_id == patient_id and x.status == SummaryStatus.GENERATED]
+        return max(c, key=lambda x: x.updated_at, default=None)
+
+
 class FakeUnitOfWork:
     def __init__(self, store: FakeStore) -> None:
         self.store = store
@@ -100,6 +119,7 @@ class FakeUnitOfWork:
         self._snap = self.store.snapshot()
         self.patients, self.source_records, self.audit, self.fhir = (
             FakePatients(self.store), FakeSourceRecords(self.store), FakeAudit(self.store), FakeFhir(self.store))
+        self.summaries = FakeSummaries(self.store)
         return self
 
     def __exit__(self, *exc):

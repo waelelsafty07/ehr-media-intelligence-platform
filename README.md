@@ -1,8 +1,8 @@
 # EHR Media Intelligence Platform
 
 A technical-assessment project that ingests heterogeneous healthcare records, normalizes them, resolves
-patient identity conservatively, transforms them to FHIR R4, and (planned) summarizes them with grounded AI
-and exposes semantic search in a clinician UI. **Synthetic data only. Not a medical device. No HIPAA
+patient identity conservatively, transforms them to FHIR R4, generates grounded AI clinical summaries,
+and (planned) exposes semantic search in a clinician UI. **Synthetic data only. Not a medical device. No HIPAA
 compliance claim has been made or assessed.**
 
 ## Implementation status
@@ -12,7 +12,7 @@ compliance claim has been made or assessed.**
 | Foundation (API skeleton, logging, config, tests) | **Implemented** |
 | Task 1: Data ingestion and cleaning (JSON/CSV/text) | **Implemented** |
 | Task 2: FHIR R4 transformation and validation | **Implemented** (Patient, DocumentReference, DiagnosticReport, Bundle) |
-| Task 3: AI clinical summaries (OpenAI) | Not implemented |
+| Task 3: AI clinical summaries (OpenAI) | **Implemented, not live-tested** (verified with fakes and the real SDK over a mocked transport; never run against the live OpenAI API) |
 | Task 4: Semantic search | Not implemented |
 | Task 5: Clinician interface | Not implemented (a placeholder page only checks `/health`) |
 
@@ -33,6 +33,13 @@ Everything below describes what exists unless it is explicitly marked **planned*
 - FHIR R4 generation per patient (`POST /patients/{id}/fhir`): Patient, DocumentReference, DiagnosticReport and a
   collection Bundle with `urn:uuid` references, three-layer validation, idempotent regeneration, persisted resources,
   and a FHIR status that is separate from ingestion status. Only source-supported data is mapped (no invented codes).
+- AI clinical summaries (`POST/GET /patients/{id}/summary`): a grounded pipeline over the patient's own completed records
+  (no name/MRN/DOB sent to the model), strict structured output where every statement carries an exact evidence quote and
+  source record IDs, deterministic checks that reject unsupported claims (invented diagnoses, hedged findings stated as
+  confirmed, history shown as current, wrong dates/numbers, advice, >200 words, other patients' records), computed recent
+  records / missing information / quality indicator, caching (patient + records hash + prompt version + model),
+  retries with backoff, and recorded retryable failures. **The checks do not guarantee clinical correctness**; see
+  [docs/AI_EVALUATION.md](docs/AI_EVALUATION.md). Without an API key the endpoint answers 503 and everything else works.
 - Structured JSON logs with request IDs and secret redaction; consistent error responses.
 
 ## Architecture
@@ -60,8 +67,10 @@ FHIR flow: patient + `completed` records -> fingerprint (skip if unchanged) -> d
 `fhir.resources.R4B` -> Bundle -> value-set / reference / attachment checks + library validation -> resources
 replaced atomically, state `generated` (`invalid`/`failed` serve nothing). See [docs/FHIR_MAPPING.md](docs/FHIR_MAPPING.md).
 
-**Planned (not built):** grounded RAG summaries behind an
-`LLMProvider` port (OpenAI), embeddings (`all-MiniLM-L6-v2`) and ChromaDB as a rebuildable search index with
+AI summary flow: patient-scoped records -> context -> cache lookup -> `LLMProvider` (OpenAI adapter) -> parse + strict
+schema -> grounding checks -> persist; details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+**Planned (not built):** embeddings (`all-MiniLM-L6-v2`) and ChromaDB as a rebuildable search index with
 SQLite as source of truth, `POST /search`, and the clinician UI. Design rationale is in
 [docs/DECISIONS.md](docs/DECISIONS.md); those decisions are marked there as not yet implemented.
 
@@ -74,6 +83,7 @@ SQLite as source of truth, `POST /search`, and the clinician UI. Design rational
 | SQLAlchemy 2 + SQLite | Persistence |
 | python-multipart | File upload parsing |
 | fhir.resources (R4B namespace, FHIR 4.3.0) | FHIR R4 resource models and structural validation |
+| openai (SDK) | Chat Completions client, used only by `OpenAIAdapter` |
 | pytest, httpx, Ruff (dev) | Tests, FastAPI test client, lint |
 | React, Vite, TypeScript, Tailwind CSS, Vitest (frontend) | UI shell and tests |
 
@@ -122,7 +132,11 @@ cd frontend; npm ci; cd ..
 | `EHR_LOG_LEVEL` | `INFO` | Logging level |
 | `EHR_DATABASE_URL` | `sqlite:///./data/ehr.db` | SQLite file (relative to `backend/` when started there; created automatically) |
 | `EHR_MAX_UPLOAD_BYTES` | `5242880` | Upload size limit (413 above it) |
-| `EHR_OPENAI_API_KEY`, `EHR_OPENAI_MODEL` | empty / `gpt-4o-mini` | Reserved for the planned AI summaries; unused today |
+| `EHR_OPENAI_API_KEY` | empty | Enables AI summaries. Empty = summaries answer 503; never commit a real key |
+| `EHR_OPENAI_MODEL` | `gpt-4o-mini` | Model id (part of the cache key); confirm it is available to your account |
+| `EHR_OPENAI_TIMEOUT_SECONDS`, `EHR_OPENAI_TEMPERATURE` | `30`, `0.0` | Request timeout; sampling temperature (empty omits it) |
+| `EHR_SUMMARY_MAX_ATTEMPTS`, `EHR_SUMMARY_RETRY_BASE_SECONDS` | `3`, `1.0` | Attempt budget (transient errors + invalid output); backoff base |
+| `EHR_SUMMARY_MAX_CONTEXT_RECORDS`, `EHR_SUMMARY_MAX_CHARS_PER_RECORD`, `EHR_SUMMARY_MAX_OUTPUT_TOKENS` | `20`, `4000`, `1200` | Context and output limits |
 
 `EHR_CORS_ORIGINS` (JSON list, default `["http://localhost:5173"]`) can also be set. Never commit `.env` or real keys.
 
@@ -205,14 +219,35 @@ curl http://localhost:8000/patients/<patient_id>/fhir/status
 | 422 `fhir_validation_failed` | Generated FHIR failed validation; `error.details` lists `path` + `code` per issue |
 | 500 `fhir_generation_failed` | Unexpected failure (recorded; call POST again to retry) |
 
+### Summary endpoints
+Require `EHR_OPENAI_API_KEY` in `backend/.env` (restart the backend after setting it). Full contracts: [docs/API_CONTRACTS.md](docs/API_CONTRACTS.md).
+
+```bash
+curl -F "file=@data/samples/records_for_summary.json" http://localhost:8000/ingest      # note a patient_id
+curl -X POST http://localhost:8000/patients/<patient_id>/summary    # generate (second call: "cache_hit": true)
+curl http://localhost:8000/patients/<patient_id>/summary            # latest; "is_stale" is true after new records
+```
+The response contains `chief_concern`, `key_diagnoses` (each with `certainty` and `temporal`), `recent_records`, `anomalies`,
+`missing_information`, `summary_text` (<= 200 words), `source_record_ids`, `confidence_or_quality_indicator` (an
+evidence-coverage heuristic, **not** a probability or model confidence), `generated_at`, `model_identifier`,
+`prompt_version` and a disclaimer.
+
+| Status | Meaning |
+|---|---|
+| 404 `patient_not_found` / `summary_not_found` | Unknown patient / nothing generated yet |
+| 409 `no_source_records` | Patient has no completed records with text or stated diagnoses |
+| 502 `summary_generation_failed` | After retries; `details[0].reason` is provider_unavailable, provider_timeout, provider_rejected, invalid_output or persistence_error. Call POST again to retry |
+| 503 `ai_provider_not_configured` | No API key configured |
+
 Errors share one envelope: `{"error": {"code", "message", "request_id", "details"?}}`. There are no
-`/patients` listing, `/search` or summary endpoints yet.
+`/patients` listing or `/search` endpoints yet.
 
 ## Sample data
 
 [data/samples/](data/samples/) holds fabricated records with deliberate defects:
 - `records.json`: a clean record; a reformatted duplicate of it; a record with no date of birth; a patient with the
   same name but a different DOB and MRN (stays a separate patient).
+- `records_for_summary.json`: two notes for one patient (hedged finding, history, resolved symptom) for the summary demo.
 - `records_with_diagnoses.json`: records that state diagnoses, for the FHIR demo (DocumentReference + DiagnosticReport).
 - `records.csv`: a clean row and a row with an impossible date (`31/02/1990`, rejected).
 - `note.txt`: a plain-text note with `Label: value` header lines.
@@ -226,7 +261,7 @@ ruff check backend           # lint
 
 cd frontend && npm test      # frontend (Vitest)
 ```
-Current result: 185 backend tests, 2 frontend tests, lint clean. No network or API key is needed.
+Current result: 301 backend tests, 2 frontend tests, lint clean. No network or API key is needed.
 Strategy and coverage map: [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md).
 
 ## Design decisions
@@ -234,11 +269,25 @@ Strategy and coverage map: [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md).
 - Architecture and flows: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Decision records with alternatives and tradeoffs: [docs/DECISIONS.md](docs/DECISIONS.md)
 - Testing: [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md)
+- API contracts: [docs/API_CONTRACTS.md](docs/API_CONTRACTS.md)
+- AI evaluation and human-review rubric: [docs/AI_EVALUATION.md](docs/AI_EVALUATION.md)
 - FHIR mapping, version compatibility evidence and validation limits: [docs/FHIR_MAPPING.md](docs/FHIR_MAPPING.md)
 
 ## Limitations and future work
 
-- Tasks 3-5 are not implemented (see status table).
+- Tasks 4-5 are not implemented (see status table).
+- AI summaries, safety: **AI-generated, not verified.** A summary must be reviewed by a qualified clinician before any use. It must never be
+  presented as a verified diagnosis or as medical advice; the response carries a disclaimer to that effect.
+- **Evidence quotes show textual traceability, not clinical correctness.** A correctly cited, verbatim quote can still sit
+  under a distorted or misleading paraphrase (`text`, `summary_text`); omissions are not detected.
+- **English-only heuristics.** Hedging/history/negation/advice detection uses English marker lists with known coverage gaps
+  (missed phrasings, occasional over-rejection).
+- **Live behavior unverified.** The live OpenAI API has not been tested; real model output quality and rejection rates are unknown.
+  The local-stub run is not a live integration test.
+- The quality indicator is an evidence-coverage heuristic, not a probability or calibrated model confidence.
+- AI summaries, other: never run against the live OpenAI API; automated checks reduce but do not eliminate unsupported output;
+  prose in `summary_text` is only partly verifiable; retrieval is recency-based, not semantic; requires human clinical review
+  before any use; sending real clinical text to a provider needs appropriate agreements (this project uses synthetic data only).
 - FHIR: not a complete FHIR validator (no FHIRPath invariants or terminology); no coded content (the source has none);
   names are free text; bundles use `urn:uuid` references; generation is on demand per patient.
 - No resolution workflow for `needs_review` records; no listing/read endpoints for patients, records or the audit log (FHIR endpoints exist).
@@ -256,6 +305,8 @@ Strategy and coverage map: [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md).
 - Start `uvicorn` from `backend/`: a relative `EHR_DATABASE_URL` (the `.env.example` default) is resolved against the current directory, so starting elsewhere creates the database elsewhere.
 - Port 8000 already in use: start the backend on another port (`uvicorn app.main:app --port 8001`) and run the frontend with `API_PROXY_TARGET=http://localhost:8001 npm run dev`.
 - Frontend says "Backend unreachable": start the backend on port 8000 first.
+- `503 ai_provider_not_configured`: set `EHR_OPENAI_API_KEY` in `backend/.env` and restart the backend.
+- `502 summary_generation_failed` with `invalid_output`: the model's output failed the grounding checks on every attempt (nothing is stored or served); retry, or inspect the model/prompt. With `provider_rejected`, check the key, model name and account access.
 - `npm test` fails on syntax/engine errors: check `node --version` (needs 22.12+).
 - `413`/`415`/`422` from `/ingest`: see the status table above; the `message` field says what to fix.
 - Delete `backend/data/ehr.db` to reset local data (it is git-ignored).

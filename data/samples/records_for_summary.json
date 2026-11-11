@@ -1,0 +1,7 @@
+[
+  {"mrn": "MRN-000501", "name": "Taylor Synthetic", "dob": "1965-08-22", "sex": "F", "date": "2023-11-10",
+   "diagnosis": "Hypertension",
+   "note": "Seen for chest tightness on exertion. History of hypertension. Possible angina, awaiting stress test."},
+  {"mrn": "000501", "name": "Taylor Synthetic", "dob": "1965-08-22", "sex": "F", "date": "2024-02-01",
+   "note": "Follow-up visit. Stress test normal. Chest tightness has resolved."}
+]

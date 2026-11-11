@@ -188,3 +188,55 @@ Status for each: **Accepted**. "Implemented" notes say what the code actually re
   **Tradeoffs:** not directly loadable as a transaction; references are not RESTful. **Consequences:** a future
   server-loading step would convert to a transaction.
 - **Implemented:** yes.
+
+---
+# Phase 4 decisions (2026-11-11)
+
+## D25. Statements carry verbatim evidence; verification is deterministic
+- **Context:** summaries must be traceable and must not invent facts. **Decision:** the model must return, for each
+  chief concern/diagnosis/anomaly, an exact `evidence_quote` and `source_record_ids`; the pipeline verifies IDs, quote
+  presence in a cited record, diagnosis-in-quote, hedging/history/negation consistency, dates/numbers and advice, and
+  rejects (re-asks) on failure. **Alternatives:** trust the model; second-LLM judge; free text with citations only.
+  **Reasoning:** checkable without another model, cheap, explainable. **Tradeoffs:** a quote proves presence of words,
+  not faithful paraphrase; heuristics are English-only and can over-reject; more output tokens.
+  **Consequences:** limits documented in AI_EVALUATION.md; human review still required.
+- **Implemented:** yes.
+
+## D26. Deterministic parts are computed, not generated
+- **Context:** correctness and traceability beat fluency for list-like fields. **Decision:** `recent_records`,
+  `missing_information`, `source_record_ids` and the quality indicator are built in code; the model writes only chief
+  concern, diagnoses, anomalies and prose. **Alternatives:** have the model produce everything. **Reasoning:** fewer
+  hallucination surfaces. **Tradeoffs:** less flexible wording. **Implemented:** yes.
+
+## D27. The quality indicator is an evidence-coverage heuristic, not model confidence
+- **Context:** an uncalibrated LLM confidence is not clinically meaningful. **Decision:** low/medium/high from four
+  transparent factors (chief concern documented, diagnoses stated, >=2 records, all records dated), with factors and an
+  explanation returned. **Alternatives:** ask the model for a score; omit. **Tradeoffs:** says nothing about output
+  correctness. **Implemented:** yes.
+
+## D28. Cache key = (patient, hash of exact context, prompt version, model); failed rows are retryable state
+- **Context:** regenerate when content or generation settings change; recover from failures. **Decision:** the hash
+  covers record ids, normalized content hashes, truncation and the record/char limits; prompt version and model are
+  separate key parts; one row per key with status `generated`/`failed`; failed rows are never hits; `GET` reports
+  staleness. **Alternatives:** time-based TTL; in-memory cache; hash of prompt text. **Reasoning:** deterministic,
+  persistent, explainable invalidation. **Tradeoffs:** prompt text changes require bumping `PROMPT_VERSION` by hand
+  (documented in the prompt module); old rows accumulate. **Implemented:** yes.
+
+## D29. No DB transaction during the provider call; one attempt budget for transient errors and invalid output
+- **Context:** provider calls are slow and fail. **Decision:** read + cache check in a short transaction, call the
+  provider outside any transaction, persist the outcome in a new one; transient errors back off exponentially, invalid
+  output is re-asked, permanent errors stop immediately, all within `summary_max_attempts`. **Alternatives:** SDK
+  built-in retries; unlimited re-asking. **Reasoning:** explicit, testable retry policy; no long-held write locks.
+  **Tradeoffs:** concurrent duplicate calls possible. **Implemented:** yes.
+
+## D30. Minimize what leaves the system; never propagate provider text
+- **Decision:** the prompt contains only clinical text and diagnoses (no name, MRN, DOB, patient ID); the adapter
+  converts SDK errors to generic categorized errors (observed: a 429 message echoed a key-like string); logs and audit
+  hold codes/counts only. **Tradeoffs:** clinical text itself may contain identifiers in real life (synthetic here).
+  **Implemented:** yes.
+
+## D31. Chat Completions JSON mode, not provider-side structured-output schemas
+- **Context:** the live API cannot be exercised here. **Decision:** request `json_object` mode and enforce the schema
+  ourselves with Pydantic. **Alternatives:** `json_schema` strict mode (unverifiable without live access, and stricter
+  schema subset), Responses API. **Reasoning:** provider-agnostic validation we fully control and test. **Tradeoffs:**
+  relies on the model following the described format; the pipeline re-asks on violations. **Implemented:** yes.

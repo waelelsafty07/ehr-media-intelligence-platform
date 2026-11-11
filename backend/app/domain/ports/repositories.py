@@ -7,6 +7,7 @@ from typing import Protocol
 
 from app.domain.entities import AuditEvent, Patient, StoredSourceRecord
 from app.domain.fhir import FhirResourceRecord, PatientFhirState
+from app.domain.summary import StoredSummary
 
 
 class PatientRepository(Protocol):
@@ -47,3 +48,14 @@ class FhirRepository(Protocol):
         ...
     def list_resources(self, patient_id: str, resource_type: str | None = None) -> list[FhirResourceRecord]: ...
     def get_resource(self, resource_type: str, resource_id: str) -> FhirResourceRecord | None: ...
+
+
+class ClinicalSummaryRepository(Protocol):
+    """Summaries keyed by (patient_id, content_hash, prompt_version, model_identifier)."""
+
+    def get_by_key(self, patient_id: str, content_hash: str, prompt_version: str,
+                   model_identifier: str) -> StoredSummary | None: ...
+    def save(self, summary: StoredSummary) -> None:
+        """Insert, or update the row with the same cache key (a retry replaces a failed row)."""
+        ...
+    def get_latest_generated(self, patient_id: str) -> StoredSummary | None: ...
