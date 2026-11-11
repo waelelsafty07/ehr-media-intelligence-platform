@@ -1,7 +1,7 @@
 # EHR Media Intelligence Platform
 
 A technical-assessment project that ingests heterogeneous healthcare records, normalizes them, resolves
-patient identity conservatively, and (planned) transforms them to FHIR R4, summarizes them with grounded AI,
+patient identity conservatively, transforms them to FHIR R4, and (planned) summarizes them with grounded AI
 and exposes semantic search in a clinician UI. **Synthetic data only. Not a medical device. No HIPAA
 compliance claim has been made or assessed.**
 
@@ -11,7 +11,7 @@ compliance claim has been made or assessed.**
 |---|---|
 | Foundation (API skeleton, logging, config, tests) | **Implemented** |
 | Task 1: Data ingestion and cleaning (JSON/CSV/text) | **Implemented** |
-| Task 2: FHIR R4 transformation and validation | Not implemented |
+| Task 2: FHIR R4 transformation and validation | **Implemented** (Patient, DocumentReference, DiagnosticReport, Bundle) |
 | Task 3: AI clinical summaries (OpenAI) | Not implemented |
 | Task 4: Semantic search | Not implemented |
 | Task 5: Clinician interface | Not implemented (a placeholder page only checks `/health`) |
@@ -30,6 +30,9 @@ Everything below describes what exists unless it is explicitly marked **planned*
   MRN is held as `needs_review` and never merged. Names are never fuzzy-matched.
 - Idempotent reprocessing, explicit processing states, atomic per-record transactions, recoverable failures,
   and an append-only audit log (codes and IDs only, no clinical content).
+- FHIR R4 generation per patient (`POST /patients/{id}/fhir`): Patient, DocumentReference, DiagnosticReport and a
+  collection Bundle with `urn:uuid` references, three-layer validation, idempotent regeneration, persisted resources,
+  and a FHIR status that is separate from ingestion status. Only source-supported data is mapped (no invented codes).
 - Structured JSON logs with request IDs and secret redaction; consistent error responses.
 
 ## Architecture
@@ -53,7 +56,11 @@ duplicate check -> identity decision -> patient/status/audit written in one tran
 States: `received -> completed | rejected | duplicate | needs_review | failed` (`received`/`failed` are retried
 when the same content is submitted again).
 
-**Planned (not built):** FHIR R4 mapping and validation (`fhir.resources`), grounded RAG summaries behind an
+FHIR flow: patient + `completed` records -> fingerprint (skip if unchanged) -> deterministic mapping with
+`fhir.resources.R4B` -> Bundle -> value-set / reference / attachment checks + library validation -> resources
+replaced atomically, state `generated` (`invalid`/`failed` serve nothing). See [docs/FHIR_MAPPING.md](docs/FHIR_MAPPING.md).
+
+**Planned (not built):** grounded RAG summaries behind an
 `LLMProvider` port (OpenAI), embeddings (`all-MiniLM-L6-v2`) and ChromaDB as a rebuildable search index with
 SQLite as source of truth, `POST /search`, and the clinician UI. Design rationale is in
 [docs/DECISIONS.md](docs/DECISIONS.md); those decisions are marked there as not yet implemented.
@@ -66,6 +73,7 @@ SQLite as source of truth, `POST /search`, and the clinician UI. Design rational
 | Pydantic v2, pydantic-settings | Models, validation, environment configuration |
 | SQLAlchemy 2 + SQLite | Persistence |
 | python-multipart | File upload parsing |
+| fhir.resources (R4B namespace, FHIR 4.3.0) | FHIR R4 resource models and structural validation |
 | pytest, httpx, Ruff (dev) | Tests, FastAPI test client, lint |
 | React, Vite, TypeScript, Tailwind CSS, Vitest (frontend) | UI shell and tests |
 
@@ -173,14 +181,39 @@ Re-uploading identical content returns `"already_ingested": true` and creates no
 | 422 `ingestion_parse_error` | Whole file unusable (malformed JSON, CSV without recognizable header, empty, not UTF-8) |
 | 422 `validation_error` | Missing `file` field etc. |
 
-Errors share one envelope: `{"error": {"code", "message", "request_id", "details"?}}`. There are no read
-endpoints (`/patients`, `/search`, ...) yet.
+### FHIR endpoints
+Use a `patient_id` from the `/ingest` response.
+
+```bash
+# 1. ingest a sample that contains diagnoses
+curl -F "file=@data/samples/records_with_diagnoses.json" http://localhost:8000/ingest
+# 2. generate FHIR (idempotent; a second call returns "unchanged": true)
+curl -X POST http://localhost:8000/patients/<patient_id>/fhir
+# {"patient_id":"...","status":"generated","unchanged":false,"bundle_id":"...",
+#  "resource_counts":{"Patient":1,"DocumentReference":2,"DiagnosticReport":1},"issues":[],"updated_at":"..."}
+# 3. retrieve the Bundle (Content-Type: application/fhir+json)
+curl http://localhost:8000/patients/<patient_id>/fhir
+# 4. FHIR processing state: generated | invalid | failed | not_generated
+curl http://localhost:8000/patients/<patient_id>/fhir/status
+```
+
+| Status | Meaning |
+|---|---|
+| 200 | Generated / unchanged / bundle returned |
+| 404 `patient_not_found` | Unknown patient ID |
+| 409 `fhir_not_available` | Bundle requested but state is not `generated` (never generated, invalid, or failed) |
+| 422 `fhir_validation_failed` | Generated FHIR failed validation; `error.details` lists `path` + `code` per issue |
+| 500 `fhir_generation_failed` | Unexpected failure (recorded; call POST again to retry) |
+
+Errors share one envelope: `{"error": {"code", "message", "request_id", "details"?}}`. There are no
+`/patients` listing, `/search` or summary endpoints yet.
 
 ## Sample data
 
 [data/samples/](data/samples/) holds fabricated records with deliberate defects:
 - `records.json`: a clean record; a reformatted duplicate of it; a record with no date of birth; a patient with the
   same name but a different DOB and MRN (stays a separate patient).
+- `records_with_diagnoses.json`: records that state diagnoses, for the FHIR demo (DocumentReference + DiagnosticReport).
 - `records.csv`: a clean row and a row with an impossible date (`31/02/1990`, rejected).
 - `note.txt`: a plain-text note with `Label: value` header lines.
 
@@ -193,7 +226,7 @@ ruff check backend           # lint
 
 cd frontend && npm test      # frontend (Vitest)
 ```
-Current result: 121 backend tests, 2 frontend tests, lint clean. No network or API key is needed.
+Current result: 185 backend tests, 2 frontend tests, lint clean. No network or API key is needed.
 Strategy and coverage map: [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md).
 
 ## Design decisions
@@ -201,12 +234,14 @@ Strategy and coverage map: [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md).
 - Architecture and flows: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Decision records with alternatives and tradeoffs: [docs/DECISIONS.md](docs/DECISIONS.md)
 - Testing: [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md)
-- FHIR mapping: `docs/FHIR_MAPPING.md` will be added with the FHIR task (does not exist yet).
+- FHIR mapping, version compatibility evidence and validation limits: [docs/FHIR_MAPPING.md](docs/FHIR_MAPPING.md)
 
 ## Limitations and future work
 
-- Tasks 2-5 are not implemented (see status table).
-- No resolution workflow for `needs_review` records; no read endpoints for patients, records or the audit log.
+- Tasks 3-5 are not implemented (see status table).
+- FHIR: not a complete FHIR validator (no FHIRPath invariants or terminology); no coded content (the source has none);
+  names are free text; bundles use `urn:uuid` references; generation is on demand per patient.
+- No resolution workflow for `needs_review` records; no listing/read endpoints for patients, records or the audit log (FHIR endpoints exist).
 - A changed source record is stored as a new record (no supersede logic); existing patient demographics are never updated.
 - Identical raw records repeated inside one file are reported as already ingested.
 - Tables are created at startup (`create_all`); there is no migration tool.

@@ -26,11 +26,12 @@ use cases receive those implementations by constructor injection; only the compo
 ChromaDB, OpenAI, Sentence Transformers, fhir, httpx, or any outer layer, or if `application`
 imports infrastructure/api. Pydantic is allowed in the domain (validation, not I/O).
 
-## What exists today (Phases 1-2)
+## What exists today (Phases 1-3)
 
 [built] app factory, settings, logging/redaction, error envelope, request IDs, `GET /health`, React shell
 (Phase 1); canonical model, normalization, identity policy, JSON/CSV/text ingestion, duplicate
-detection, audit log, SQLite persistence, `POST /ingest` (Phase 2). FHIR, AI, embeddings and search are **[planned]**.
+detection, audit log, SQLite persistence, `POST /ingest` (Phase 2); FHIR R4 mapping, validation, persistence and
+endpoints (Phase 3). AI, embeddings and search are **[planned]**.
 
 | Path | Contents (Phase 2) |
 |---|---|
@@ -43,7 +44,11 @@ detection, audit log, SQLite persistence, `POST /ingest` (Phase 2). FHIR, AI, em
 | `application/ingestion/` | `JSON/CSV/TextIngestionStrategy`, `IngestionStrategyFactory`, `resolve_format` |
 | `application/use_cases/` | `IngestPatientRecordsUseCase`, `ResolvePatientIdentityUseCase` |
 | `infrastructure/persistence/` | SQLAlchemy tables, repositories, `SqlAlchemyUnitOfWork` |
-| `api/` | `ingest.py` (thin route), `schemas.py`, `dependencies.py` (composition root), `domain_errors.py` |
+| `domain/fhir.py`, `domain/ports/fhir.py` | FHIR state, deterministic IDs, fingerprint, library-independent validation rules; `FhirBundleBuilder` / `FhirSchemaValidator` ports |
+| `application/use_cases/` (FHIR) | `GenerateFHIRBundleUseCase`, `GetPatientFHIRBundleUseCase`, `GetPatientFHIRStatusUseCase` |
+| `infrastructure/fhir/` | `R4BBundleBuilder`, `R4BSchemaValidator`: the only code importing `fhir.resources` (R4B namespace) |
+| `infrastructure/persistence/` (FHIR) | `fhir_resources`, `patient_fhir_state` tables + `SqlAlchemyFhirRepository` |
+| `api/` | `fhir.py` (3 thin routes), `ingest.py` (thin route), `schemas.py`, `dependencies.py` (composition root), `domain_errors.py` |
 
 ## Ingestion design (built)
 
@@ -95,12 +100,23 @@ Details hold codes, IDs and counts only: a test asserts no names, dates, MRNs or
 `raw_payload` and `canonical`), `audit_events` (FKs; indexed by record, type, time). Foreign keys are
 enforced (PRAGMA). Tables are created with `create_all`; no migration tool yet.
 
+## FHIR design (built, Phase 3)
+
+Details and evidence: [FHIR_MAPPING.md](FHIR_MAPPING.md). Summary: adapter pattern around `fhir.resources.R4B`
+(R4B 4.3.0; the package's default namespace is R5). The mapper (deterministic) and bundle assembler live behind
+the `FhirBundleBuilder` port; the library validator behind `FhirSchemaValidator`; value-set, reference-integrity
+and attachment rules are pure domain code. Generation flow (one transaction): load patient + COMPLETED records ->
+fingerprint -> skip if unchanged -> map -> assemble bundle -> domain rules + library validation -> replace
+resources and save state `generated`; validation issues save `invalid` and persist no resources; an exception rolls
+back and records `failed` in a new transaction. FHIR state is independent of ingestion status. Generation is an
+explicit step (`POST /patients/{id}/fhir`), not triggered by ingestion.
+
 ## Known limitations (Phase 2)
 - No review-resolution workflow or endpoint: `needs_review` records are held, not resolved.
 - Edited content for the same source is a *new* record; there is no supersede/update logic.
 - Existing patient demographics are never updated or back-filled from later records.
 - Identical raw records repeated inside one file are treated as already-ingested.
-- No `GET` endpoints for records/audit yet (inspect via the database).
+- No `GET` endpoints for patients, records or the audit log yet (inspect via the database); FHIR endpoints exist.
 - Schema creation only (`create_all`); schema changes need a migration tool later.
 - Upload size is limited by setting; there is no authentication.
 
@@ -163,3 +179,14 @@ failure, persistence, indexing. Retries only for transient provider errors.
 ## Frontend
 
 Vite dev server proxies `/api/*` to the backend. **[built]** shell only; UI is Phase 6.
+
+## Known limitations (Phase 3)
+- FHIR validation is not a complete validator: no FHIRPath invariants or terminology/value-set service; our own
+  value-set checks cover only the code fields we populate.
+- No coded content: DocumentReference has no `type`/`category`, DiagnosticReport is uncoded with status `unknown`
+  (the source provides none of these). Clinical coding would need a terminology source and a human/clinical decision.
+- Patient names are free text (`name.text`), not split into given/family.
+- Bundles use `urn:uuid` full URLs (no FHIR server base URL); resources are not served individually
+  (`FhirRepository.get_resource` exists for Phase 5).
+- Generation is per patient and on demand; there is no bulk or automatic regeneration.
+- Stale-but-previously-valid resources are retained (not served) after an `invalid`/`failed` regeneration.

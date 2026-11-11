@@ -57,3 +57,32 @@ class AuditEventRow(Base):
     details: Mapped[dict[str, Any]] = mapped_column(JSON)
 
 
+
+
+class FhirResourceRow(Base):
+    """One generated FHIR resource (JSON). Replaced wholesale per patient on regeneration."""
+
+    __tablename__ = "fhir_resources"
+    resource_type: Mapped[str] = mapped_column(String(40), primary_key=True)
+    resource_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.patient_id"), index=True)
+    source_record_id: Mapped[str | None] = mapped_column(ForeignKey("source_records.record_id"))
+    position: Mapped[int] = mapped_column(Integer)
+    content: Mapped[dict[str, Any]] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(DateTime)
+    __table_args__ = (Index("ix_fhir_resources_patient_type", "patient_id", "resource_type"),)
+
+
+class PatientFhirStateRow(Base):
+    """FHIR processing state per patient, separate from source_records.status (ingestion)."""
+
+    __tablename__ = "patient_fhir_state"
+    patient_id: Mapped[str] = mapped_column(ForeignKey("patients.patient_id"), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    bundle_id: Mapped[str | None] = mapped_column(String(64))
+    bundle_timestamp: Mapped[datetime | None] = mapped_column(DateTime)
+    resource_count: Mapped[int] = mapped_column(Integer, default=0)
+    issues: Mapped[list[dict[str, Any]]] = mapped_column(JSON)
+    failure_category: Mapped[str | None] = mapped_column(String(100))
+    updated_at: Mapped[datetime] = mapped_column(DateTime)

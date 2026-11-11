@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.domain.canonical import (
@@ -15,7 +15,14 @@ from app.domain.canonical import (
     SourceFormat,
 )
 from app.domain.entities import AuditEvent, AuditEventType, Patient, StoredSourceRecord
-from app.infrastructure.persistence.tables import AuditEventRow, PatientRow, SourceRecordRow
+from app.domain.fhir import FhirIssue, FhirResourceRecord, FhirStatus, PatientFhirState
+from app.infrastructure.persistence.tables import (
+    AuditEventRow,
+    FhirResourceRow,
+    PatientFhirStateRow,
+    PatientRow,
+    SourceRecordRow,
+)
 
 
 def _utc(dt: datetime) -> datetime:
@@ -35,6 +42,10 @@ class SqlAlchemyPatientRepository:
     def _to_domain(r: PatientRow) -> Patient:
         return Patient(patient_id=r.patient_id, mrn=r.mrn, full_name=r.full_name, name_key=r.name_key,
                        date_of_birth=r.date_of_birth, gender=Gender(r.gender), created_at=_utc(r.created_at))
+
+    def get(self, patient_id: str) -> Patient | None:
+        row = self._s.get(PatientRow, patient_id)
+        return self._to_domain(row) if row else None
 
     def get_by_mrn(self, mrn: str) -> Patient | None:
         row = self._s.scalar(select(PatientRow).where(PatientRow.mrn == mrn))
@@ -99,6 +110,14 @@ class SqlAlchemySourceRecordRepository:
             .order_by(SourceRecordRow.received_at, SourceRecordRow.record_id).limit(1))
         return self._to_domain(row) if row else None
 
+    def list_completed_for_patient(self, patient_id: str) -> list[StoredSourceRecord]:
+        rows = self._s.scalars(
+            select(SourceRecordRow)
+            .where(SourceRecordRow.patient_id == patient_id,
+                   SourceRecordRow.status == ProcessingStatus.COMPLETED.value)
+            .order_by(SourceRecordRow.received_at, SourceRecordRow.record_id))
+        return [self._to_domain(r) for r in rows]
+
     def add(self, rec: StoredSourceRecord) -> None:
         row = SourceRecordRow(record_id=rec.record_id, source_id=rec.source_id, source_name=rec.source_name,
                               source_format=rec.source_format.value, record_index=rec.record_index,
@@ -133,3 +152,56 @@ class SqlAlchemyAuditLogRepository:
         return [AuditEvent(id=r.id, occurred_at=_utc(r.occurred_at), event_type=AuditEventType(r.event_type),
                            source_name=r.source_name, record_id=r.record_id, patient_id=r.patient_id,
                            outcome=r.outcome, details=r.details) for r in self._s.scalars(stmt)]
+
+
+class SqlAlchemyFhirRepository:
+    def __init__(self, session: Session) -> None:
+        self._s = session
+
+    @staticmethod
+    def _resource(r: FhirResourceRow) -> FhirResourceRecord:
+        return FhirResourceRecord(resource_type=r.resource_type, resource_id=r.resource_id,
+                                  patient_id=r.patient_id, source_record_id=r.source_record_id,
+                                  position=r.position, content=r.content)
+
+    def get_state(self, patient_id: str) -> PatientFhirState | None:
+        r = self._s.get(PatientFhirStateRow, patient_id)
+        if r is None:
+            return None
+        return PatientFhirState(
+            patient_id=r.patient_id, status=FhirStatus(r.status), fingerprint=r.fingerprint,
+            bundle_id=r.bundle_id, bundle_timestamp=_utc(r.bundle_timestamp) if r.bundle_timestamp else None,
+            resource_count=r.resource_count, issues=[FhirIssue(**i) for i in r.issues],
+            failure_category=r.failure_category, updated_at=_utc(r.updated_at))
+
+    def save_state(self, state: PatientFhirState) -> None:
+        row = self._s.get(PatientFhirStateRow, state.patient_id) or PatientFhirStateRow(patient_id=state.patient_id)
+        row.status = state.status.value
+        row.fingerprint = state.fingerprint
+        row.bundle_id = state.bundle_id
+        row.bundle_timestamp = _naive(state.bundle_timestamp) if state.bundle_timestamp else None
+        row.resource_count = state.resource_count
+        row.issues = [i.model_dump() for i in state.issues]
+        row.failure_category = state.failure_category
+        row.updated_at = _naive(state.updated_at)
+        self._s.add(row)
+        self._s.flush()
+
+    def replace_resources(self, patient_id: str, resources: list[FhirResourceRecord]) -> None:
+        self._s.execute(delete(FhirResourceRow).where(FhirResourceRow.patient_id == patient_id))
+        now = _naive(datetime.now(UTC))
+        self._s.add_all(FhirResourceRow(
+            resource_type=r.resource_type, resource_id=r.resource_id, patient_id=patient_id,
+            source_record_id=r.source_record_id, position=r.position, content=r.content, updated_at=now)
+            for r in resources)
+        self._s.flush()
+
+    def list_resources(self, patient_id: str, resource_type: str | None = None) -> list[FhirResourceRecord]:
+        stmt = select(FhirResourceRow).where(FhirResourceRow.patient_id == patient_id).order_by(FhirResourceRow.position)
+        if resource_type:
+            stmt = stmt.where(FhirResourceRow.resource_type == resource_type)
+        return [self._resource(r) for r in self._s.scalars(stmt)]
+
+    def get_resource(self, resource_type: str, resource_id: str) -> FhirResourceRecord | None:
+        row = self._s.get(FhirResourceRow, (resource_type, resource_id))
+        return self._resource(row) if row else None

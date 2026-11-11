@@ -3,12 +3,23 @@
 from fastapi import FastAPI, Request
 
 from app.core.errors import build_error_response
-from app.domain.errors import FileTooLargeError, IngestionParseError, UnsupportedFormatError
+from app.domain.errors import (
+    FhirGenerationFailedError,
+    FhirNotAvailableError,
+    FhirValidationFailedError,
+    FileTooLargeError,
+    IngestionParseError,
+    PatientNotFoundError,
+    UnsupportedFormatError,
+)
 
 _MAPPING = {
     IngestionParseError: (422, "ingestion_parse_error"),
     UnsupportedFormatError: (415, "unsupported_format"),
     FileTooLargeError: (413, "file_too_large"),
+    PatientNotFoundError: (404, "patient_not_found"),
+    FhirNotAvailableError: (409, "fhir_not_available"),
+    FhirGenerationFailedError: (500, "fhir_generation_failed"),
 }
 
 
@@ -19,3 +30,10 @@ def register_domain_error_handlers(app: FastAPI) -> None:
             return build_error_response(status, code, str(exc))
 
         app.add_exception_handler(exc_type, handler)
+
+
+    def validation_failed(_: Request, exc: Exception):
+        issues = [{"path": i.path, "code": i.code} for i in exc.issues]  # type: ignore[attr-defined]
+        return build_error_response(422, "fhir_validation_failed", str(exc), issues)
+
+    app.add_exception_handler(FhirValidationFailedError, validation_failed)

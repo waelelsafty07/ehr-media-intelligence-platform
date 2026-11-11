@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.infrastructure.persistence.repositories import (
     SqlAlchemyAuditLogRepository,
+    SqlAlchemyFhirRepository,
     SqlAlchemyPatientRepository,
     SqlAlchemySourceRecordRepository,
 )
@@ -22,6 +23,7 @@ class SqlAlchemyUnitOfWork:
         self.patients = SqlAlchemyPatientRepository(self._session)
         self.source_records = SqlAlchemySourceRecordRepository(self._session)
         self.audit = SqlAlchemyAuditLogRepository(self._session)
+        self.fhir = SqlAlchemyFhirRepository(self._session)
         return self
 
     def __exit__(self, *exc_info: object) -> None:

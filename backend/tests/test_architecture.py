@@ -45,3 +45,17 @@ def test_checker_detects_a_violation(tmp_path):
     f = tmp_path / "bad.py"
     f.write_text("import sqlalchemy\nfrom app.infrastructure import x\n")
     assert {"sqlalchemy", "app.infrastructure"} <= _imports(f)
+
+
+def test_fhir_library_is_confined_to_infrastructure_and_only_the_r4b_namespace():
+    """fhir.resources' top-level namespace is FHIR R5 (5.0.0); R4-compatible models live in R4B."""
+    offenders = []
+    for file in APP.rglob("*.py"):
+        for imp in _imports(file):
+            if imp == "fhir" or imp.startswith("fhir."):
+                rel = file.relative_to(APP)
+                if rel.parts[:2] != ("infrastructure", "fhir"):
+                    offenders.append(f"{rel} imports {imp} outside infrastructure/fhir")
+                elif not imp.startswith("fhir.resources.R4B"):
+                    offenders.append(f"{rel} imports non-R4B namespace {imp}")
+    assert offenders == []

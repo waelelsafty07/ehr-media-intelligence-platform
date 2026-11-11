@@ -6,6 +6,7 @@ from typing import Protocol, Self
 
 from app.domain.ports.repositories import (
     AuditLogRepository,
+    FhirRepository,
     PatientRepository,
     SourceRecordRepository,
 )
@@ -17,6 +18,7 @@ class UnitOfWork(Protocol):
     patients: PatientRepository
     source_records: SourceRecordRepository
     audit: AuditLogRepository
+    fhir: FhirRepository
 
     def __enter__(self) -> Self: ...
     def __exit__(self, *exc_info: object) -> None: ...

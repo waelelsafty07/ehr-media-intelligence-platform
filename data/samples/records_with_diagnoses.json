@@ -1,0 +1,9 @@
+[
+  {"mrn": "MRN-000401", "name": "Morgan Fixture", "dob": "1972-05-20", "sex": "F",
+   "note": "Review of seasonal symptoms. Inhaler technique discussed.", "date": "2024-05-02",
+   "diagnosis": "Asthma; Seasonal allergic rhinitis"},
+  {"mrn": "000401", "name": "Morgan Fixture", "dob": "1972-05-20", "sex": "female",
+   "note": "Follow-up visit, symptoms improved.", "date": "2024-06-15"},
+  {"mrn": "MRN-000402", "name": "Jordan Placeholder", "dob": "1988-09-03", "sex": "M",
+   "diagnosis": "Hypertension"}
+]

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from app.domain.canonical import ProcessingStatus, SourceFormat, ValidationIssue
+from app.domain.fhir import FhirIssue, FhirStatus
 
 
 @dataclass(frozen=True)
@@ -39,3 +41,14 @@ class IngestResult:
         for r in self.results:
             out[r.status.value] = out.get(r.status.value, 0) + 1
         return out
+
+
+@dataclass(frozen=True)
+class FhirGenerationResult:
+    patient_id: str
+    status: FhirStatus
+    unchanged: bool = False  # inputs identical to the last successful generation; nothing rewritten
+    bundle_id: str | None = None
+    resource_counts: dict[str, int] = field(default_factory=dict)
+    issues: list[FhirIssue] = field(default_factory=list)
+    updated_at: datetime | None = None

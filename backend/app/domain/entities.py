@@ -52,6 +52,10 @@ class AuditEventType(StrEnum):
     PROCESSING_FAILED = "processing_failed"
     REPROCESS_SKIPPED = "reprocess_skipped"
     INGEST_REJECTED = "ingest_rejected"
+    FHIR_GENERATED = "fhir_generated"
+    FHIR_UNCHANGED = "fhir_unchanged"
+    FHIR_VALIDATION_FAILED = "fhir_validation_failed"
+    FHIR_GENERATION_FAILED = "fhir_generation_failed"
 
 
 class AuditEvent(BaseModel):

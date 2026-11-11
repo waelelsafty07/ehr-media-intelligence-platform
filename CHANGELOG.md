@@ -19,3 +19,8 @@
   with explicit packaging (`app*`), runtime vs dev dependencies; `docs/TESTING_STRATEGY.md`; README rewritten
   to match the implementation; frontend dev-proxy target configurable via `API_PROXY_TARGET`; Node engine
   requirement declared in `frontend/package.json`.
+- FHIR R4 (via `fhir.resources.R4B`): deterministic mapping of Patient, DocumentReference and DiagnosticReport;
+  per-patient collection Bundle with resolvable `urn:uuid` references; three-layer validation (library, value
+  sets, reference integrity); persisted resources and a FHIR processing state separate from ingestion status;
+  idempotent regeneration by fingerprint; endpoints `POST /patients/{id}/fhir`, `GET /patients/{id}/fhir`,
+  `GET /patients/{id}/fhir/status`; sample `records_with_diagnoses.json`; `docs/FHIR_MAPPING.md`.

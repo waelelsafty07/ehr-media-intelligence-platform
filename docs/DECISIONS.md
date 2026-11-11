@@ -17,9 +17,8 @@ Enables dependency injection of settings in tests; API key is a `SecretStr` so i
 ## D4. Frontend: Vite + React + TypeScript + Tailwind v4 + Vitest
 Lightest React toolchain that matches the required stack; TypeScript added for API contract safety.
 
-## Open item for Phase 3
-`fhir-resources` 8.x exposes R5 at the top level; R4 resources live under `fhir.resources.R4B`
-(FHIR 4.3.0, R4-compatible). Must be verified and documented when FHIR mapping starts.
+## Open item for Phase 3 (resolved: see D20)
+`fhir-resources` 8.x exposes R5 at the top level; R4 resources live under `fhir.resources.R4B`.
 
 ## D5. Avoid a package named `models/` (2026-11-11)
 The standard `.gitignore` ignores `models/` (ML artifacts), which would also match
@@ -141,4 +140,51 @@ Status for each: **Accepted**. "Implemented" notes say what the code actually re
   Ambiguous day/month dates are invalid. **Alternatives:** drop invalid fields and continue (would bypass
   identity checks silently). **Reasoning:** DOB drives conflict detection. **Tradeoffs:** stricter than lenient
   parsing. **Consequences:** rejected records need correction and resubmission.
+- **Implemented:** yes.
+
+---
+# Phase 3 decisions (2026-11-11)
+
+## D20. Use `fhir.resources.R4B` (FHIR 4.3.0) as the R4 implementation, and only that namespace
+- **Context:** the package's default namespace is FHIR 5.0.0; the assessment requires R4. **Decision:** import only
+  `fhir.resources.R4B.*`, confined to `infrastructure/fhir`, enforced by an architecture test. **Alternatives:**
+  `fhir.resources` 6.4.0 (true R4 4.0.1; requires Pydantic v1, incompatible with this stack); the top-level R5
+  namespace; hand-written dicts without the library. **Reasoning:** I compared R4 4.0.1 and R4B 4.3.0 models for the
+  eight classes used: element names and required elements are identical. **Tradeoffs:** R4B is not byte-for-byte
+  R4 everywhere (e.g. medicinal-product resources), and this is evidence of structural equivalence for the used
+  resources only. **Consequences:** only elements present in both are populated.
+- **Implemented:** yes.
+
+## D21. Three-layer FHIR validation instead of trusting the library
+- **Context:** probing showed the library accepts invalid code values and dangling references. **Decision:**
+  library validation + domain value-set checks + domain reference/attachment checks, all run before persisting.
+  **Alternatives:** library only; an external validator (HAPI/Java) as a service. **Reasoning:** cheap, deterministic,
+  offline; covers the failure modes that matter for the fields we populate. **Tradeoffs:** not a complete validator;
+  rules are hand-maintained. **Consequences:** documented as a limitation.
+- **Implemented:** yes.
+
+## D22. Mapper emits only source-supported data; no coded or inferred content
+- **Context:** "do not invent clinical facts". **Decision:** omit `DocumentReference.type/category/docStatus`; use
+  `DiagnosticReport.status=unknown` and an uncoded `code.text`; names as text only; diagnoses verbatim.
+  **Alternatives:** assign LOINC/SNOMED codes, status `final`. **Reasoning:** the source supports none of these.
+  **Tradeoffs:** lower interoperability value than a coded record. **Consequences:** coding is future work needing a
+  terminology source and clinical review.
+- **Implemented:** yes.
+
+## D23. Separate FHIR processing state; explicit generation; idempotent by fingerprint
+- **Context:** ingestion success must not imply FHIR success. **Decision:** `patient_fhir_state`
+  (`generated|invalid|failed`), generation via `POST /patients/{id}/fhir`, fingerprint of mapper version + patient +
+  completed-record content hashes, resources replaced atomically per patient, bundle only served when `generated`.
+  **Alternatives:** generate during ingestion; status columns on `source_records`; regenerate always.
+  **Reasoning:** FHIR is per patient and depends on all of the patient's records; a failure must not roll back or
+  relabel ingestion. **Tradeoffs:** an extra call; no automatic regeneration. **Consequences:** the bundle is
+  re-assembled from stored resources rather than stored twice.
+- **Implemented:** yes.
+
+## D24. `urn:uuid` references and full URLs inside collection Bundles
+- **Context:** no FHIR server base URL exists. **Decision:** `fullUrl` and references are `urn:uuid:<id>`;
+  Bundle type `collection`. **Alternatives:** `transaction` bundle with PUT entries; relative references with a fake
+  base URL. **Reasoning:** every reference resolves inside the bundle without inventing a base URL.
+  **Tradeoffs:** not directly loadable as a transaction; references are not RESTful. **Consequences:** a future
+  server-loading step would convert to a transaction.
 - **Implemented:** yes.
