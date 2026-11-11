@@ -12,7 +12,7 @@ Frontend: `cd frontend && npm test` (Vitest). Lint: `ruff check backend`.
   and fault injection.
 - Failure paths are tested next to success paths.
 
-## What exists today (463 backend tests + 1 opt-in skipped, plus 2 frontend)
+## What exists today (476 backend tests + 1 opt-in skipped, plus 24 frontend)
 
 | Area | File | Tests | Covers |
 |---|---|---|---|
@@ -48,6 +48,18 @@ Frontend: `cd frontend && npm test` (Vitest). Lint: `ruff check backend`.
 | AI evaluation (synthetic) | `evaluation/test_summary_evaluation.py` | 18 | 14 synthetic cases with expected verdicts, aggregate detection metrics, determinism, a documented known limit |
 | API | `integration/test_ingest_api.py` | 10 | sample files end to end, 422/415/413, validation envelope, no internal leaks |
 | Frontend | `frontend/src/App.test.tsx` | 2 | health success / unreachable states |
+
+### Phase 6 additions
+- Backend `tests/integration/test_patient_display_api.py` (6): success, exactly the three approved fields, safe 404, id-length validation, `/search` still free of names/MRNs, OpenAPI schema minimal.
+- Frontend (Vitest + Testing Library + user-event, `fetch` fully mocked, no network): `src/App.test.tsx` (18) covers submission, ranked cards, display lookup (and de-duplication to one call per patient),
+  lookup-failure fallback, patient/type/date filters, client-side validation, empty/loading/error+retry states, lexical-mode indicator, drawer open/close/Escape/focus restore,
+  AI summary labelling + disclaimer, FHIR-unavailable / missing-resource / missing-summary handling. `src/api/client.test.ts` (5) covers body shaping, safe errors, abort propagation, and that only the requested DocumentReference is extracted.
+- Backend `tests/integration/test_fhir_resource_api.py` (7): exact resource returned and equal to the stored one, no demographics, Patient type refused, another patient's resource = same 404 as missing, wrong/unknown type, unknown patient / FHIR not generated, id length.
+- **Real-browser smoke test (manual, not part of `pytest`/`npm test`, not committed):** a throwaway Playwright script driving the locally installed Chrome (`playwright-core` installed outside the repo; no
+  new project dependency) against a real backend (lexical embedder, local OpenAI HTTP stub for the summary, synthetic `records_for_summary.json`) and the Vite dev server. 23 checks passed:
+  ingest->FHIR->summary->index->search, 3 result cards, name/MRN lookup (one call), document and AI-summary drawers, focused FHIR links open a single resource, Escape/focus restore,
+  type/date/patient filters, no horizontal overflow at 768 px and 375 px, no unexpected console errors. It is a one-off check on one machine (macOS, Chrome), not a CI test.
+- Not covered: no automated visual/regression or accessibility (axe) scan; other browsers untested; contrast not measured; keyboard behaviour verified only for Escape/focus restore.
 
 ## Planned (not yet written; tracked per phase)
 Embeddings/indexing/search filters/patient isolation/empty

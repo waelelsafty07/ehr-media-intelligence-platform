@@ -29,6 +29,14 @@ class FhirNotAvailableError(DomainError):
         self.status = status
 
 
+class FhirResourceNotFoundError(DomainError):
+    """The requested FHIR resource does not exist, is not retrievable individually, or belongs to another patient.
+    One message for all three cases so the response does not reveal whether a resource exists elsewhere."""
+
+    def __init__(self) -> None:
+        super().__init__("FHIR resource not found.")
+
+
 class FhirBuildError(DomainError):
     """The mapper could not construct valid FHIR resources; carries client-safe issues."""
 

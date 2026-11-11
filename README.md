@@ -21,7 +21,7 @@ and (planned) presents them in a clinician UI.
 | Task 2: FHIR R4 transformation and validation | **Implemented** (Patient, DocumentReference, DiagnosticReport, Bundle) |
 | Task 3: AI clinical summaries (OpenAI) | **Implemented, not live-tested** (verified with fakes and the real SDK over a mocked transport; never run against the live OpenAI API) |
 | Task 4: Semantic search | **Implemented** (`POST /search`; default = real `all-MiniLM-L6-v2` embeddings, which need the `embeddings` extra; lexical mode is an explicit fallback) |
-| Task 5: Clinician interface | Not implemented (a placeholder page only checks `/health`) |
+| Task 5: Clinician interface | **Implemented** (React search UI: filters, ranked cards, detail drawer; verified with mocked-API tests and a one-off real-Chrome smoke test) |
 
 Everything below describes what exists unless it is explicitly marked **planned**.
 
@@ -171,7 +171,7 @@ uvicorn app.main:app --reload
 # Terminal 2: frontend
 cd frontend
 npm run dev
-# http://localhost:5173 (proxies /api/* to the backend; shows whether the backend is reachable)
+# http://localhost:5173 (proxies /api/* to the backend; the clinician search UI)
 ```
 
 ## API documentation
@@ -312,6 +312,13 @@ median of 8.0 ms (max 9.9 ms); the lexical fallback 3.1 ms.
 
 Errors share one envelope: `{"error": {"code", "message", "request_id", "details"?}}`. There is no `/patients` listing endpoint yet.
 
+### Clinician search UI and patient display lookup
+`npm run dev` serves the UI at http://localhost:5173. Prepare data first (ingest, `POST /patients/{id}/fhir`, `POST /search/reindex`), then search, filter (patient id, resource type, date range),
+and open a result to see the full document or AI summary with its FHIR references (each links to the individual FHIR resource via `GET /patients/{id}/fhir/resources/{type}/{rid}`; the UI never downloads the whole Bundle). Cards show patient name and MRN, which come from a **separate** call, `GET /patients/{patient_id}/display`
+(returns only `patient_id`, `patient_name`, `mrn`); `/search` results intentionally contain no names or MRNs. If the lookup fails the card shows "Patient details unavailable".
+Lookups are cached in memory per page session only. Scores are embedding similarity, not clinical relevance. AI summaries are labelled and carry the clinical disclaimer.
+**Local synthetic-data demo: no authentication or authorization; do not use with real patient data.**
+
 ## Sample data
 
 [data/samples/](data/samples/) holds fabricated records with deliberate defects:
@@ -347,7 +354,8 @@ Strategy and coverage map: [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md).
 
 ## Limitations and future work
 
-- Task 5 (clinician UI) is not implemented (see status table).
+- UI: smoke-tested once in real Chrome on macOS with a throwaway script (see `docs/TESTING_STRATEGY.md`), but no automated browser/visual/accessibility tests, other browsers untested; the patient filter takes an opaque patient id (there is no patient listing endpoint, by design); search requires records to be ingested, FHIR-generated and indexed first.
+- No authentication or authorization anywhere (UI included); `GET /patients/{id}/display` returns a name and MRN to any caller and is not an access control.
 - Search: semantic mode needs the `embeddings` extra and a one-time model download (otherwise 503, no silent fallback); the lexical fallback matches shared
   words only; indexing is an explicit step, not automatic; exact scan measured only to 20,000 entries; long texts are truncated by the model (~256 word
   pieces, no chunking); only DocumentReference text and AI summaries are indexed; the quality evaluation is small, synthetic and author-written.

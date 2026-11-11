@@ -261,7 +261,13 @@ failure, persistence, indexing. Retries only for transient provider errors.
 
 ## Frontend
 
-Vite dev server proxies `/api/*` to the backend. **[built]** shell only; UI is Phase 6.
+Vite dev server proxies `/api/*` to the backend. **[built, Phase 6]** clinician search UI (React + TypeScript + Tailwind):
+- `src/api/client.ts` is the only module that calls `fetch`; it maps HTTP errors to safe messages and supports `AbortSignal`. `src/api/types.ts` keeps **search results and
+  patient display info as separate models**.
+- `src/hooks/usePatientDisplay.ts` is a session-scoped cache of in-flight/resolved display lookups (one request per patient; failures are not cached).
+- `src/components/`: `SearchForm` (query + patient/type/date filters, client-side validation), `ResultCard`, `DetailDrawer` (modal dialog: focus moved in and restored, Escape closes, Tab trapped).
+- `App.tsx` owns search state; a new search aborts the previous request so a slow stale response cannot overwrite a newer one.
+- Backend additions: `GET /patients/{id}/fhir/resources/{type}/{rid}` (`GetPatientFHIRResourceUseCase`: patient exists, FHIR state `generated`, resource owned by the patient, type limited to DocumentReference/DiagnosticReport; the UI never downloads the Bundle) and `GET /patients/{id}/display` (route `api/patients.py` -> `GetPatientDisplayUseCase` -> existing patient repository).
 
 ## Known limitations (Phase 3)
 - FHIR validation is not a complete validator: no FHIRPath invariants or terminology/value-set service; our own

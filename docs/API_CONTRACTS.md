@@ -112,3 +112,23 @@ bound is set; `min_score` can only raise the similarity floor (results with simi
 - `embedding.kind` is `semantic` (sentence-transformers) or `lexical` (explicit hashing fallback: matches shared words only).
 - Errors: 422 `validation_error` (details: location + rule, never the input), 404 `patient_not_found` (unknown `patient_id`),
   503 `embedding_provider_unavailable`, 503 `search_index_unavailable`.
+
+## Focused FHIR resource
+### GET /patients/{patient_id}/fhir/resources/{resource_type}/{resource_id}
+Returns **one** stored, validated FHIR resource (`application/fhir+json`), not the Bundle. Only `DocumentReference` and `DiagnosticReport` are served this way; the `Patient`
+resource (name, MRN, date of birth) is intentionally not retrievable here and stays available only in the full Bundle. Requires the patient's FHIR state to be `generated`.
+Errors (envelope as elsewhere): `404 patient_not_found`; `409 fhir_not_available`; `404 fhir_resource_not_found` when the resource does not exist, is a type not served here, or
+belongs to a different patient (the three cases are deliberately indistinguishable); `422` for ids over 64 characters. Added in Phase 6 so the UI does not download the Bundle.
+
+## Patient display lookup
+
+### GET /patients/{patient_id}/display
+Purpose: let the clinician UI label a search result with a patient name and MRN **without** putting identifiers in `/search` responses (which stay free
+of name, MRN and date of birth). The UI calls this separately, once per patient per page session.
+
+`200 {"patient_id": "...", "patient_name": "Alex Test" | null, "mrn": "000101"}` — exactly these three fields. No date of birth, gender or clinical content.
+`patient_name` is null when no name was recorded. `404 {"error": {"code": "patient_not_found", ...}}` for an unknown id; `422` for an id longer than 64 characters.
+There is no `GET /patients` listing endpoint.
+
+**Security limitation:** this project has no authentication or authorization. This endpoint is a display convenience for the local synthetic-data demo; it is
+**not** an authorization mechanism, and anyone who can reach the API and knows (or obtains) a patient id can call it.

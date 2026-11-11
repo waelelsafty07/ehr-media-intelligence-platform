@@ -309,3 +309,16 @@ Status for each: **Accepted**. "Implemented" notes say what the code actually re
   model, and one opt-in test uses the real one. **Alternatives:** keep lexical default; auto-fallback to lexical when unavailable (rejected: would silently misrepresent
   results). **Tradeoffs:** heavier setup (~1 GB PyTorch, one-time ~90 MB download), 3.7 s cold start, ~8 ms warm search; a fresh clone without the extra gets 503 on search until set up.
   **Implemented:** yes; mutation-checked (reverting the default, adding a silent fallback and re-adding identifiers each fail tests).
+
+## D41. Patient names/MRNs reach the UI only through a separate `GET /patients/{id}/display`
+**Decision:** search results stay identifier-free (D40); the clinician UI needs name and MRN on result cards, so a dedicated endpoint returns exactly `patient_id`, `patient_name`, `mrn`
+(no DOB/gender/notes). The UI fetches it per patient, caches in memory for the page session, and degrades to "Patient details unavailable" on failure. **Alternatives:** put names in
+`/search` (rejected: reverses D40); `GET /patients` listing (rejected: broader exposure, not needed). **Tradeoffs:** extra requests (one per distinct patient); the endpoint exposes name+MRN to
+any caller by patient id. **Security:** no authentication/authorization exists; this is a demo display lookup, not access control. **Also:** the patient filter is an opaque-id text box (+ "Only this patient" on a card)
+because there is deliberately no listing endpoint. **Implemented:** yes.
+
+## D42. Focused FHIR resource endpoint instead of downloading the whole Bundle in the UI
+**Decision:** `GET /patients/{id}/fhir/resources/{type}/{rid}` returns one stored resource (DocumentReference/DiagnosticReport only), reusing `FhirRepository.get_resource`; the use case checks the patient
+exists, FHIR state is `generated`, and `record.patient_id == patient_id`. Missing, foreign and unserved-type all yield the same 404 `fhir_resource_not_found`. The `Patient` resource is refused
+(still in the Bundle). **Why:** the drawer needed one DocumentReference but was pulling the full Patient (name, MRN, DOB) over the wire. **Alternatives:** keep the Bundle (rejected: needless exposure); id-only path
+(rejected: resource ids are unique only per type). **Tradeoffs:** one more endpoint; the type in the path. **Limits:** does not reduce what the unauthenticated Bundle endpoint exposes. **Implemented:** yes.

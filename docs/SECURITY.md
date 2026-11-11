@@ -22,6 +22,8 @@ against SQLite); these are correctness controls, not authorization.
 | `POST /ingest` | opaque `patient_id` / record ids; validation messages never contain values | no |
 | `GET /patients/{id}/fhir` | **Yes: full FHIR `Patient` (name, MRN, date of birth, gender)** | document text (base64) and diagnoses |
 | `POST/GET /patients/{id}/summary` | opaque `patient_id` only | AI-generated summary text, quotes, diagnoses |
+| `GET /patients/{id}/fhir/resources/{type}/{rid}` | **No** for the types it serves (DocumentReference, DiagnosticReport; Patient is refused). Checks the resource belongs to the patient | document text (base64), diagnoses |
+| `GET /patients/{id}/display` | **Yes: name and MRN only** (no date of birth, gender or clinical content). Added in Phase 6 so the UI can label results; deliberately separate from `/search`. A display convenience, **not** an authorization mechanism | no |
 | `POST /search`, `GET /search/status`, index endpoints | opaque `patient_id` only. **Search results contain no name, MRN or date of birth** | `snippet` (an excerpt of stored text; it contains whatever the text contains) |
 
 The opaque `patient_id` is a random UUID. It is an identifier, not a secret, and it is returned to callers. There is no patient listing endpoint, but
@@ -47,3 +49,12 @@ Authenticated users (SSO/OIDC), authorization checks on every endpoint with pati
 per-user audit logging, TLS, encryption at rest and key management, secrets management, rate limiting and abuse protection, data retention and
 deletion policy, a vetted pipeline for any third-party AI provider (business associate agreements, data minimization review), vulnerability and
 dependency management, backup/DR, and a formal privacy/security/compliance assessment and clinical safety review.
+
+## Clinician UI (Phase 6)
+- The browser UI is part of the same unauthenticated local demo: synthetic data only, never real patient data.
+- Search results carry no names or MRNs; the UI fetches them per patient from `GET /patients/{id}/display` and keeps them **in memory only** for the page session
+  (no `localStorage`, cookies or URL parameters). Closing the tab discards them.
+- The detail view requests only the one resource it shows, via `GET /patients/{id}/fhir/resources/{type}/{rid}` (ownership-checked, Patient resource refused), not the Bundle.
+  The full-Bundle endpoint still exists and still returns the whole `Patient` resource to any caller.
+- Error messages shown in the browser come from a fixed client-side table keyed by the backend's error `code`; server message text is never rendered.
+- The patient filter is a data-scoping aid, not access control.

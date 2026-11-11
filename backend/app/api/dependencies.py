@@ -8,8 +8,10 @@ from app.application.use_cases.generate_clinical_summary import (
     SummaryConfig,
 )
 from app.application.use_cases.generate_fhir_bundle import GenerateFHIRBundleUseCase
+from app.application.use_cases.get_patient_display import GetPatientDisplayUseCase
 from app.application.use_cases.get_patient_fhir import (
     GetPatientFHIRBundleUseCase,
+    GetPatientFHIRResourceUseCase,
     GetPatientFHIRStatusUseCase,
 )
 from app.application.use_cases.get_patient_summary import GetPatientSummaryUseCase
@@ -84,3 +86,11 @@ def get_search_use_case(request: Request) -> SearchClinicalRecordsUseCase:
 def get_search_status_use_case(request: Request) -> GetSearchStatusUseCase:
     st = request.app.state
     return GetSearchStatusUseCase(st.embedding_provider, st.vector_store)
+
+
+def get_patient_display_use_case(request: Request) -> GetPatientDisplayUseCase:
+    return GetPatientDisplayUseCase(_uow_factory(request))
+
+
+def get_fhir_resource_use_case(request: Request) -> GetPatientFHIRResourceUseCase:
+    return GetPatientFHIRResourceUseCase(_uow_factory(request))

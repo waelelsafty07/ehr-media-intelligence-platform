@@ -3,10 +3,14 @@
 ## [Unreleased]
 
 ### Added
+- Clinician search UI (React): search with patient/resource-type/date filters, ranked result cards (name, MRN, type, date, similarity, snippet), search-mode indicator, detail drawer with
+  document text or AI summary, FHIR references, AI-generated labelling and disclaimer; loading/empty/error states with retry; keyboard/focus handling.
+- `GET /patients/{patient_id}/fhir/resources/{resource_type}/{resource_id}`: one DocumentReference or DiagnosticReport (ownership-checked; Patient refused; safe 404s). The UI uses it instead of downloading the Bundle.
+- `GET /patients/{patient_id}/display`: returns only `patient_id`, `patient_name`, `mrn`. `/search` responses are unchanged and still contain no names or MRNs.
 - Backend foundation: FastAPI app factory, environment-based settings, structured JSON logging
   with secret redaction, request-ID middleware, consistent error envelope, `GET /health`,
   SQLite engine/session setup.
-- Frontend shell (React, Vite, TypeScript, Tailwind) that calls the backend health endpoint.
+- Frontend shell (React, Vite, TypeScript, Tailwind) that calls the backend health endpoint (replaced by the clinician search UI below).
 - Synthetic sample records in `data/samples/`.
 - Architecture and decision documentation.
 - Clean Architecture layer packages (domain, application, infrastructure) and an import-direction test.

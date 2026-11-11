@@ -5,7 +5,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import fhir, health, ingest, search, summaries
+from app.api import fhir, health, ingest, patients, search, summaries
 from app.api.domain_errors import register_domain_error_handlers
 from app.core.config import Settings, get_settings
 from app.core.errors import register_error_handlers
@@ -57,6 +57,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(fhir.router)
     app.include_router(summaries.router)
     app.include_router(search.router)
+    app.include_router(patients.router)
 
     logger.info("app_started", extra={"environment": settings.environment})
     return app

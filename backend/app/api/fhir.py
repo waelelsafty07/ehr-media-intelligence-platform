@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.dependencies import (
     get_fhir_bundle_use_case,
+    get_fhir_resource_use_case,
     get_fhir_status_use_case,
     get_generate_fhir_use_case,
 )
@@ -12,6 +13,7 @@ from app.api.schemas import FhirStatusResponse
 from app.application.use_cases.generate_fhir_bundle import GenerateFHIRBundleUseCase
 from app.application.use_cases.get_patient_fhir import (
     GetPatientFHIRBundleUseCase,
+    GetPatientFHIRResourceUseCase,
     GetPatientFHIRStatusUseCase,
 )
 from app.domain.errors import FhirGenerationFailedError, FhirValidationFailedError
@@ -45,3 +47,14 @@ def get_fhir_bundle(patient_id: str = PatientId,
                     use_case: GetPatientFHIRBundleUseCase = Depends(get_fhir_bundle_use_case)) -> JSONResponse:
     """The patient's FHIR R4 collection Bundle (only when status is `generated`)."""
     return JSONResponse(content=use_case.execute(patient_id), media_type="application/fhir+json")
+
+
+@router.get("/patients/{patient_id}/fhir/resources/{resource_type}/{resource_id}", response_class=JSONResponse,
+            responses={200: {"content": {"application/fhir+json": {}}}})
+def get_fhir_resource(resource_type: str = Path(..., min_length=1, max_length=64),
+                      resource_id: str = Path(..., min_length=1, max_length=64),
+                      patient_id: str = PatientId,
+                      use_case: GetPatientFHIRResourceUseCase = Depends(get_fhir_resource_use_case)) -> JSONResponse:
+    """One DocumentReference or DiagnosticReport of this patient (not the whole Bundle; the Patient resource is never
+    served here). 404 when missing, not retrievable individually, or owned by another patient."""
+    return JSONResponse(content=use_case.execute(patient_id, resource_type, resource_id), media_type="application/fhir+json")
